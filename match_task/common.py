@@ -3,7 +3,7 @@ import numpy as np
 import os
 
 data_dir = r'/home/patrick/PatrickWorkspace/Datasets/UAVgeolocalization'
-expr_base = r'/home/patrick/PatrickWorkspace/Visual/expriments/match_task'
+expr_base = r'/home/patrick/PatrickWorkspace/AerialVisualGeolocalization/expriments/match_task'
 
 
 def default_corners(img):
@@ -137,3 +137,18 @@ def homography(src_img, dst_img, src_points, dst_points, save_path, src_corners=
     perspective = cv.warpPerspective(src_img, retval, (dst_img.shape[1], dst_img.shape[0]))
     cv.imwrite(save_path, perspective)
     return retval, mask
+
+
+if __name__ == '__main__':
+    origin_frame_dir = os.path.join(data_dir, 'Image', 'Village0', 'original frames')
+    out_dir = os.path.join(data_dir, 'Image', 'Village0', 'anno_corrected_loc')
+    files = os.listdir(origin_frame_dir)
+    anno_corners = []
+    for filename in files:
+        img = cv.imread(os.path.join(origin_frame_dir, filename))
+        scaled, scale_mat, scale_corners = adaptive_scale(img, 0.15)
+        roted, rot_mat, rot_corners = rotation_phi(scaled, -132, scale_corners)
+        cv.imwrite(os.path.join(out_dir, filename), roted)
+        anno_corners.append(rot_corners)
+    print(anno_corners)
+

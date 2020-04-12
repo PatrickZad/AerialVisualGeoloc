@@ -7,7 +7,7 @@ distance_thresh = 0.2
 geometric_thresh = 12
 ncc_templsize = 25
 
-expr_base = os.path.join(expr_base, 'rubust test')
+# expr_base = os.path.join(expr_base, 'rubust test')
 map_path = os.path.join(data_dir, 'Image', 'Village0', 'map.jpg')
 frame_dir = os.path.join(data_dir, 'Image', 'Village0', 'loc')
 binary_dir = os.path.join(data_dir, 'Image', 'Village0', 'binary')
@@ -36,6 +36,18 @@ def cv_match(queryIdx, trainIdx):
     match.trainIdx = trainIdx
     match.imgIdx = 0
     return match
+
+
+def neighbors(point, limit, width=3, height=3):
+    assert width % 2 == 1 and height % 2 == 1
+    neighbor_list = []
+    x = int(point[0])
+    y = int(point[1])
+    for i in range(max(x - width // 2, 0), min(x + width // 2 + 1, limit[0])):
+        for j in range(max(y - height // 2, 0), min(y + height // 2 + 1, limit[1])):
+            if i != point[0] or j != point[1]:
+                neighbor_list.append((i, j))
+    return neighbor_list
 
 
 def detect_compute(img, compactness=None, content_corners=None, draw=None, calc_oriens=False):
@@ -72,7 +84,9 @@ def detect_compute(img, compactness=None, content_corners=None, draw=None, calc_
     return points, descriptors
 
 
-def feature_match(img1, img2, img1_features=None, img2_features=None, draw=None, match_result=None, sift_method=False):
+def feature_match(img1, img2, img1_features=None, img2_features=None, draw=None, match_result=None, sift_method=False,
+                  neighbor_refine=1):
+    assert neighbor_refine > 0 and neighbor_refine % 2 == 1
     if img1_features is None:
         img1_point, img1_desc = detect_compute(img1)
     else:
@@ -92,9 +106,30 @@ def feature_match(img1, img2, img1_features=None, img2_features=None, draw=None,
                 good_matches.append(m)
         corresponding1 = []
         corresponding2 = []
-        for match in good_matches:
-            corresponding1.append(img1_point[match.queryIdx].pt)
-            corresponding2.append(img2_point[match.trainIdx].pt)
+        if neighbor_refine > 1:
+            detector = cv.xfeatures2d_SIFT.create()
+            gray_img = cv.cvtColor(img2, cv.COLOR_BGR2GRAY)
+            for match in good_matches:
+                center_point = img2_point[match.trainIdx]
+                neighbor_coords = neighbors(center_point.pt, (img2.shape[1] - 1, img2.shape[0] - 1), neighbor_refine,
+                                            neighbor_refine)
+                keypoints = []
+                for (x, y) in neighbor_coords:
+                    oriens = compute_orientation(gray_img, (x, y))
+                    for orien in oriens:
+                        keypoints.append(cv_point((x, y), orien))
+                neighbor_points, neighbor_descs = detector.compute(img2, keypoints)
+                neighbor_points.append(center_point)
+                neighbor_descs = np.concatenate([neighbor_descs, np.expand_dims(img2_desc[match.trainIdx], axis=0)],
+                                                axis=0)
+                refine_match = \
+                    matcher.knnMatch(np.expand_dims(img1_desc[match.queryIdx], axis=0), neighbor_descs, 1)[0][0]
+                corresponding1.append(img1_point[match.queryIdx].pt)
+                corresponding2.append(neighbor_points[refine_match.trainIdx].pt)
+        else:
+            for match in good_matches:
+                corresponding1.append(img1_point[match.queryIdx].pt)
+                corresponding2.append(img2_point[match.trainIdx].pt)
     else:
         raw_matches = matcher.knnMatch(img1_desc, img2_desc, 50)
         distance_valid_matches = raw_matches
@@ -598,13 +633,90 @@ def map_features(mapimg, calc_orien=False):
     return map_points, map_descs
 
 
+def eval():
+    import pandas as pd
+
+    base_dir = os.path.join(data_dir, 'Image', 'Village0')
+    test_points = []
+    target_points = []
+    estimate_points = []
+    corrected_frame_dir = os.path.join(base_dir, 'loc')
+    reference = cv.imread(map_path)
+    print('Map Load !')
+    map_points, map_descs = map_features(reference, True)
+    corners = pd.read_csv(os.path.join(corrected_frame_dir, 'corners.csv'))
+    correspondence = pd.read_csv(os.path.join(corrected_frame_dir, 'correspondence_points.csv'))
+    expr_dir = os.path.join(expr_base, 'anno_frame_match')
+    frames = correspondence.index
+    for frame_file in frames:
+        fileid = frame_file[:-4]
+        frame = cv.imread(os.path.join(corrected_frame_dir, frame_file))
+        corner = np.array([[corners.loc[frame_file, 'x1'], corners.loc[frame_file, 'y1'] + 5],
+                           [corners.loc[frame_file, 'x2'] - 5, corners.loc[frame_file, 'y2']],
+                           [corners.loc[frame_file, 'x0'] + 5, corners.loc[frame_file, 'y0']],
+                           [corners.loc[frame_file, 'x3'], corners.loc[frame_file, 'y3'] - 5]])
+        test_list = []
+        for i in range(1, 6):
+            test_list.append([correspondence.loc[frame_file, 'x' + str(i) + '_1'],
+                              correspondence.loc[frame_file, 'y' + str(i) + '_1']])
+        test_points.append(test_list)
+        target_list = []
+        for i in range(1, 6):
+            target_list.append([correspondence.loc[frame_file, 'x' + str(i) + '_2'],
+                                correspondence.loc[frame_file, 'y' + str(i) + '_2']])
+        target_points.append(target_list)
+        match_result = []
+        frame_points, frame_descs = detect_compute(frame, compactness,
+                                                   draw=os.path.join(expr_dir, fileid + '_slic.png'),
+                                                   content_corners=corner, calc_oriens=True)
+        print('Frame ' + fileid + ' features calculated !')
+        img1_points, img2_points = feature_match(frame, reference, (frame_points, frame_descs), (map_points, map_descs),
+                                                 os.path.join(expr_dir, fileid + '_slic_match.png'), match_result,
+                                                 sift_method=True, neighbor_refine=5)
+        print(fileid + ' match complete !')
+        if len(img1_points) < 4 or len(img2_points) < 4:
+            print(fileid + ' match failed !')
+        else:
+            img1_points = np.array(img1_points).reshape((-1, 1, 2))
+            img2_points = np.array(img2_points).reshape((-1, 1, 2))
+            retval, mask = homography(frame, reference, img1_points, img2_points,
+                                      save_path=os.path.join(expr_dir, fileid + '_slic-homography.png'))
+            if retval is None:
+                print(fileid + ' slic sift match failed !')
+            else:
+                valid_matches = []
+                for i in range(mask.shape[0]):
+                    if mask[i][0] == 1:
+                        valid_matches.append(match_result[0][2][i])
+                print(fileid + ' valid matches: ' + str(len(valid_matches)))
+                draw_match(frame, match_result[0][0], reference, match_result[0][1], valid_matches,
+                           os.path.join(expr_dir, fileid + '_corrected_slic_match.png'))
+        test_points_array = np.array(test_list)
+        homog_tests = np.concatenate([test_points_array, np.ones((len(test_list), 1))], axis=1)
+        homog_estimates = np.matmul(homog_tests, retval.T)
+        homog_estimates /= homog_estimates[:, 2:]
+        estimate_points.append(homog_estimates[:, :-1])
+    target_array = np.array(target_points)
+    print(target_array)
+    estimate_array = np.array(estimate_points)
+    print(estimate_array)
+    square_error = (target_array - estimate_array) ** 2
+    point_wise_error = (np.sum(square_error, axis=-1)) ** 0.5
+    print(point_wise_error)
+    average_error = np.mean(point_wise_error, axis=-1)
+    print(average_error)
+    mean_average_error = np.mean(average_error)
+    print(mean_average_error)
+
+
 if __name__ == '__main__':
     import pickle
     import pandas as pd
     from multiprocessing import Pool
 
-    demo_create()
-    proc_pool = Pool(4)
+    eval()
+    '''demo_create()
+    proc_pool = Pool(4)'''
     # orien_test()
     # zero_orien_test()
 

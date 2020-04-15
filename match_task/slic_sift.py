@@ -152,12 +152,17 @@ def detect_compute(img, compactness=None, content_corners=None, draw=None, calc_
     pool.close()
     pool.join()
     '''
+=======
+    keypoints = []
+    maskof_img = mask_of(img.shape[0], img.shape[1], content_corners)
+>>>>>>> 16c0d8fb66390be3b7b0e43fe599fe81ef099caa
     for y in range(img.shape[0]):
         for x in range(img.shape[1]):
             if boundary_mask[y][x] == 255 and maskof_img[y][x] == 255:
                 if calc_oriens:
                     oriens = compute_orientation(gray_img, (x, y))
                     for orien in oriens:
+<<<<<<< HEAD
                         keypoints_dict[str(x) + ',' + str(y) + ',' + str(orien)] = cv_point((x, y), orien)
                         # keypoints.append(cv_point((x, y), orien))
                     for neighbor in neighbors((x, y), (img.shape[1], img.shape[0]), neighbor_refine, neighbor_refine):
@@ -205,7 +210,6 @@ def feature_match(img1, img2, img1_features=None, img2_features=None, draw=None,
         raw_matches = matcher.knnMatch(img1_desc, img2_desc, 2)
         good_matches = []
         # match filtering
-
         for m, n in raw_matches:
             if m.distance < ratio_thresh * n.distance:
                 heapq.heappush(good_matches, (m.distance, m))

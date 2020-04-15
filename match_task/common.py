@@ -155,8 +155,6 @@ def patch2background(src_img, content_corner, background):
             if mask[y][x] == 1:
                 background[y][x] = src_img[y][x]
     return background
-
-
 if __name__ == '__main__':
     origin_frame_dir = os.path.join(data_dir, 'Image', 'Village0', 'original frames')
     out_dir = os.path.join(data_dir, 'Image', 'Village0', 'anno_corrected_loc')

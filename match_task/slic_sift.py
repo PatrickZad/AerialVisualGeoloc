@@ -2,7 +2,7 @@ import cv2 as cv
 from match_task.common import *
 import logging
 import heapq
-import multiprocessing as mp
+from multiprocessing import Pool,Manager,Lock
 
 distance_thresh = 0.2
 geometric_thresh = 12
@@ -133,13 +133,13 @@ def detect_compute(img, compactness=None, content_corners=None, draw=None, calc_
     slicer.iterate()
     slic_mask = slicer.getLabelContourMask()
     #corner detection
-    detected_corners=cv.cornerHarris(gray_img,2,3,0.04)
-    img_content_mask = mask_of(img.shape[0], img.shape[1], content_corners)
+    corner_mask=cv.cornerHarris(gray_img,2,3,0.04)
+    content_mask = mask_of(img.shape[0], img.shape[1], content_corners)
     # keypoints = []
     # keypoints_dict = {}
-    manager = mp.Manager()
-    lock = mp.Lock()
-    pool = mp.Pool(multi_p)
+    '''pool = Pool(multi_p)
+    manager = Manager()
+    lock = Lock()
     detected_points = manager.list()
     coord_set = manager.dict()
     desc_arrays=manager.list()
@@ -153,58 +153,60 @@ def detect_compute(img, compactness=None, content_corners=None, draw=None, calc_
         x_start += x_part
         y_start += y_part
     pool.close()
-    pool.join()
-    '''points = manager.list()
-    desc_arrays = manager.list()
-    part_length = len(detected_points) // 4 + 1
-    part_start = 0
-    pool = mp.Pool(multi_p)
-    for i in range(multi_p):
-        part_end = min(part_start + part_length, len(detected_points))
-        pool.apply_async(compute_task, args=(img, detected_points[part_start:part_end], points, desc_arrays, lock))
-        part_start += part_length
-    pool.close()
     pool.join()'''
-    '''
-    for y in range(img.shape[0]):
-        for x in range(img.shape[1]):
-            if boundary_mask[y][x] == 255 and maskof_img[y][x] == 255:
+    keypoints = []
+    coord_set=()
+    corner_thred = corner_mask.max() * 0.01
+    corner_array=np.array(content_corners)
+    x_max,x_min=corner_array[:,0].max(),corner_array[:,0].min()
+    y_max, y_min = corner_array[:, 1].max(), corner_array[:, 1].min()
+    for y in range(y_min,y_max+1):
+        for x in range(x_min,x_max+1):
+            if content_mask[y][x] == 255 and (slic_mask[y][x] == 255 or corner_mask[y][x] > corner_thred):
                 if calc_oriens:
-                    oriens = compute_orientation(gray_img, (x, y))
-                    for orien in oriens:
-                        keypoints_dict[str(x) + ',' + str(y) + ',' + str(orien)] = cv_point((x, y), orien)
-                        # keypoints.append(cv_point((x, y), orien))
-                    for neighbor in neighbors((x, y), (img.shape[1], img.shape[0]), neighbor_refine, neighbor_refine):
-                        oriens = compute_orientation(gray_img, neighbor)
+                    coord = str(x) + ',' + str(y)
+                    if coord not in coord_set.keys():
+                        coord_set.append(coord)
+                        oriens = compute_orientation(gray_img, (x, y))
                         for orien in oriens:
-                            keypoints_dict[str(neighbor[0]) + ',' + str(neighbor[1]) + ',' + str(orien)] = cv_point(
-                                neighbor, orien)
+                            keypoints.append(cv_point((x, y), orien))
+                    for neighbor in neighbors((x, y), (img.shape[1], img.shape[0]), neighbor_refine,
+                                              neighbor_refine):
+                        coord = str(neighbor[0]) + ',' + str(neighbor[1])
+                        if coord not in coord_set.keys():
+                            coord_set.append(coord)
+                            oriens = compute_orientation(gray_img, neighbor)
+                            for orien in oriens:
+                                keypoints.append(cv_point(neighbor, orien))
                 else:
-                    # keypoints.append(cv_point((x, y)))
-                    keypoints_dict[str(x) + ',' + str(y) + ',0'] = cv_point((x, y))
-                    for neighbor in neighbors((x, y), (img.shape[1], img.shape[0]), neighbor_refine, neighbor_refine):
-                        keypoints_dict[str(neighbor[0]) + ',' + str(neighbor[1]) + ',0'] = cv_point(neighbor)
-
+                    coord = str(x) + ',' + str(y)
+                    if coord not in coord_set.keys():
+                        coord_set.append(coord)
+                        keypoints.append(cv_point((x, y)))
+                    for neighbor in neighbors((x, y), (img.shape[1], img.shape[0]), neighbor_refine,
+                                              neighbor_refine):
+                        coord = str(neighbor[0]) + ',' + str(neighbor[1])
+                        if coord not in coord_set.keys():
+                            coord_set.append(coord)
+                            keypoints.append(cv_point(neighbor))
     detector = cv.xfeatures2d_SIFT.create()
     # points, descriptors = detector.compute(img, keypoints)
-    points, descriptors = detector.compute(img, keypoints_dict.values())
-    '''
+    points, descriptors = detector.compute(img, keypoints)
     if draw is not None:
         copy = img.copy()
-        corner_thred=detected_corners.max()*0.01
+        corner_thred=corner_mask.max()*0.01
         for y in range(img.shape[0]):
             for x in range(img.shape[1]):
-                if img_content_mask[y][x] == 255:
+                if content_mask[y][x] == 255:
                     if slic_mask[y][x] == 255:
-                        if detected_corners[y][x]>corner_thred:
+                        if corner_mask[y][x]>corner_thred:
                             copy[y][x]=(255,0,0)
                         else:
                             copy[y][x]=(0,0, 255)
-                    elif detected_corners[y][x]>corner_thred:
+                    elif corner_mask[y][x]>corner_thred:
                         copy[y][x] = (0,255,0)
         cv.imwrite(draw, copy)
-    descriptors = np.concatenate(desc_arrays, axis=0)
-    return detected_points, descriptors
+    return points, descriptors
 
 
 def feature_match(img1, img2, img1_features=None, img2_features=None, draw=None, match_result=None, sift_method=False):
@@ -752,7 +754,7 @@ def map_features(mapimg, calc_orien=False, neighbors=1):
         map_binary = os.path.join(binary_dir, 'map_features_0orien_n' + str(neighbors) + '.pkl')
     if not os.path.exists(map_binary):
         map_points, map_descs = detect_compute(mapimg, compactness, draw=os.path.join(expr_base, 'map_slic.png'),
-                                               calc_oriens=calc_orien)
+                                               calc_oriens=calc_orien,multi_p=16)
         print('Map feartures calculated !')
         pt_vals = []
         for point in map_points:
@@ -809,7 +811,7 @@ def eval():
         match_result = []
         frame_points, frame_descs = detect_compute(frame, compactness,
                                                    draw=os.path.join(expr_dir, fileid + '_slic.png'),
-                                                   content_corners=corner, calc_oriens=True)
+                                                   content_corners=corner, calc_oriens=True,multi_p=16)
         logger.info('Frame ' + fileid + ' features calculated !')
         img1_points, img2_points = feature_match(frame, reference, (frame_points, frame_descs), (map_points, map_descs),
                                                  os.path.join(expr_dir, fileid + '_slic_match.png'), match_result,

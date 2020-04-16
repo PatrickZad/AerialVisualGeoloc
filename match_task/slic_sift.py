@@ -51,16 +51,18 @@ def neighbors(point, limit, width=3, height=3):
     return neighbor_list
 
 
-def detect_task(img, gray_img, x_scope, y_scope, mask_img, boundary_img, keypoints, coord_set, lock, calc_oriens,
-                neighbor_refine):
+def detect_compute_task(img, gray_img, x_scope, y_scope, content_mask, slic_mask, corner_mask,coord_set, out_points, out_descs, lock, calc_oriens,
+                        neighbor_refine):
+    keypoints=[]
+    corner_thred=corner_mask.max()*0.01
     for y in range(y_scope[0], y_scope[1]):
         for x in range(x_scope[0], x_scope[1]):
-            if boundary_img[y][x] == 255 and mask_img[y][x] == 255:
+            if content_mask[y][x] == 255 and (slic_mask[y][x] == 255 or corner_mask[y][x]>corner_thred):
                 if calc_oriens:
                     lock.acquire()
                     coord = str(x) + ',' + str(y)
-                    if coord not in coord_set:
-                        coord_set.append(coord)
+                    if coord not in coord_set.keys():
+                        coord_set[coord]=''
                         lock.release()
                         oriens = compute_orientation(gray_img, (x, y))
                         for orien in oriens:
@@ -71,8 +73,8 @@ def detect_task(img, gray_img, x_scope, y_scope, mask_img, boundary_img, keypoin
                                               neighbor_refine):
                         coord = str(neighbor[0]) + ',' + str(neighbor[1])
                         lock.acquire()
-                        if coord not in coord_set:
-                            coord_set.append(coord)
+                        if coord not in coord_set.keys():
+                            coord_set[coord]=''
                             lock.release()
                             oriens = compute_orientation(gray_img, neighbor)
                             for orien in oriens:
@@ -82,8 +84,8 @@ def detect_task(img, gray_img, x_scope, y_scope, mask_img, boundary_img, keypoin
                 else:
                     coord = str(x) + ',' + str(y)
                     lock.acquire()
-                    if coord not in coord_set:
-                        coord_set.append(coord)
+                    if coord not in coord_set.keys():
+                        coord_set[coord]=''
                         lock.release()
                         keypoints.append(cv_point((x, y)))
                     else:
@@ -92,11 +94,20 @@ def detect_task(img, gray_img, x_scope, y_scope, mask_img, boundary_img, keypoin
                                               neighbor_refine):
                         coord = str(neighbor[0]) + ',' + str(neighbor[1])
                         lock.acquire()
-                        if coord not in coord_set:
-                            keypoints.append(cv_point(neighbor))
+                        if coord not in coord_set.keys():
+                            coord_set[coord] = ''
                             lock.release()
+                            keypoints.append(cv_point(neighbor))
                         else:
                             lock.release()
+    detector = cv.xfeatures2d_SIFT.create()
+    # points, descriptors = detector.compute(img, keypoints)
+    points, descriptors = detector.compute(img, keypoints)
+    lock.acquire()
+    out_points.append(points)
+    out_descs.append(descriptors)
+    lock.release()
+
 
 
 def compute_task(img, detected_points, final_points, desc_arrays, lock):
@@ -120,27 +131,30 @@ def detect_compute(img, compactness=None, content_corners=None, draw=None, calc_
     gray_img = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
     slicer = cv.ximgproc.createSuperpixelSLIC(lab_img, region_size=compactness)
     slicer.iterate()
-    boundary_mask = slicer.getLabelContourMask()
-    maskof_img = mask_of(img.shape[0], img.shape[1], content_corners)
+    slic_mask = slicer.getLabelContourMask()
+    #corner detection
+    detected_corners=cv.cornerHarris(gray_img,2,3,0.04)
+    img_content_mask = mask_of(img.shape[0], img.shape[1], content_corners)
     # keypoints = []
     # keypoints_dict = {}
     manager = mp.Manager()
     lock = mp.Lock()
     pool = mp.Pool(multi_p)
     detected_points = manager.list()
-    coord_set = manager.list()
+    coord_set = manager.dict()
+    desc_arrays=manager.list()
     x_part, y_part = img.shape[1] // multi_p + 1, img.shape[0] // multi_p + 1
     x_start, y_start = 0, 0
     for i in range(multi_p):
         x_end, y_end = min(img.shape[1], x_start + x_part), min(img.shape[0], y_start + y_part)
-        pool.apply_async(detect_task, args=(
-            img, gray_img, (x_start, x_end), (y_start, y_end), maskof_img, boundary_mask,
-            detected_points, coord_set, lock, calc_oriens, neighbor_refine))
+        pool.apply_async(detect_compute_task, args=(img, gray_img, (x_start, x_end), (y_start, y_end),
+                                                    img_content_mask, slic_mask,detected_corners,coord_set, detected_points,
+                                                    desc_arrays,lock, calc_oriens,neighbor_refine))
         x_start += x_part
         y_start += y_part
     pool.close()
     pool.join()
-    points = manager.list()
+    '''points = manager.list()
     desc_arrays = manager.list()
     part_length = len(detected_points) // 4 + 1
     part_start = 0
@@ -150,19 +164,14 @@ def detect_compute(img, compactness=None, content_corners=None, draw=None, calc_
         pool.apply_async(compute_task, args=(img, detected_points[part_start:part_end], points, desc_arrays, lock))
         part_start += part_length
     pool.close()
-    pool.join()
+    pool.join()'''
     '''
-=======
-    keypoints = []
-    maskof_img = mask_of(img.shape[0], img.shape[1], content_corners)
->>>>>>> 16c0d8fb66390be3b7b0e43fe599fe81ef099caa
     for y in range(img.shape[0]):
         for x in range(img.shape[1]):
             if boundary_mask[y][x] == 255 and maskof_img[y][x] == 255:
                 if calc_oriens:
                     oriens = compute_orientation(gray_img, (x, y))
                     for orien in oriens:
-<<<<<<< HEAD
                         keypoints_dict[str(x) + ',' + str(y) + ',' + str(orien)] = cv_point((x, y), orien)
                         # keypoints.append(cv_point((x, y), orien))
                     for neighbor in neighbors((x, y), (img.shape[1], img.shape[0]), neighbor_refine, neighbor_refine):
@@ -182,18 +191,24 @@ def detect_compute(img, compactness=None, content_corners=None, draw=None, calc_
     '''
     if draw is not None:
         copy = img.copy()
+        corner_thred=detected_corners.max()*0.01
         for y in range(img.shape[0]):
             for x in range(img.shape[1]):
-                if boundary_mask[y][x] == 255 and maskof_img[y][x] == 255:
-                    copy[y][x][2] = 255
-                    copy[y][x][0], copy[y][x][1] = 0, 0
+                if img_content_mask[y][x] == 255:
+                    if slic_mask[y][x] == 255:
+                        if detected_corners[y][x]>corner_thred:
+                            copy[y][x]=(255,0,0)
+                        else:
+                            copy[y][x]=(0,0, 255)
+                    elif detected_corners[y][x]>corner_thred:
+                        copy[y][x] = (0,255,0)
         cv.imwrite(draw, copy)
     descriptors = np.concatenate(desc_arrays, axis=0)
-    return points, descriptors
+    return detected_points, descriptors
 
 
-def feature_match(img1, img2, img1_features=None, img2_features=None, draw=None, match_result=None, sift_method=False,
-                  max_matches=500):
+def feature_match(img1, img2, img1_features=None, img2_features=None, draw=None, match_result=None, sift_method=False):
+    # max_matches=500):
     # neighbor_refine=1):
     # assert neighbor_refine > 0 and neighbor_refine % 2 == 1
     if img1_features is None:
@@ -210,12 +225,15 @@ def feature_match(img1, img2, img1_features=None, img2_features=None, draw=None,
         raw_matches = matcher.knnMatch(img1_desc, img2_desc, 2)
         good_matches = []
         # match filtering
-        for m, n in raw_matches:
-            if m.distance < ratio_thresh * n.distance:
-                heapq.heappush(good_matches, (m.distance, m))
-                # good_matches.append(m)
         corresponding1 = []
         corresponding2 = []
+        for m, n in raw_matches:
+            if m.distance < ratio_thresh * n.distance:
+                #heapq.heappush(good_matches, (m.distance, m))
+                good_matches.append(m)
+                corresponding1.append(img1_point[m.queryIdx].pt)
+                corresponding2.append(img2_point[m.trainIdx].pt)
+
         '''if neighbor_refine > 1:
             detector = cv.xfeatures2d_SIFT.create()
             gray_img = cv.cvtColor(img2, cv.COLOR_BGR2GRAY)
@@ -235,8 +253,9 @@ def feature_match(img1, img2, img1_features=None, img2_features=None, draw=None,
                 refine_match = matcher.knnMatch(np.expand_dims(img1_desc[match.queryIdx], axis=0), neighbor_descs, 1)[0][0]
                 corresponding1.append(img1_point[match.queryIdx].pt)
                 corresponding2.append(neighbor_points[refine_match.trainIdx].pt)
-        else:'''
-        # use best 500-at-most matches
+        else:
+        '''
+        ''' # use best 500-at-most matches
         if len(good_matches) <= max_matches:
             for match in good_matches:
                 corresponding1.append(img1_point[match.queryIdx].pt)
@@ -245,7 +264,7 @@ def feature_match(img1, img2, img1_features=None, img2_features=None, draw=None,
             for i in range(max_matches):
                 match = heapq.heappop(good_matches)
                 corresponding1.append(img1_point[match.queryIdx].pt)
-                corresponding2.append(img2_point[match.trainIdx].pt)
+                corresponding2.append(img2_point[match.trainIdx].pt)'''
         '''for match in good_matches:
             corresponding1.append(img1_point[match.queryIdx].pt)
             corresponding2.append(img2_point[match.trainIdx].pt)'''

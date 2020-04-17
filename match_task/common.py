@@ -133,10 +133,28 @@ def homography(src_img, dst_img, src_points, dst_points, save_path, src_corners=
     for coordinate in projected_corners:
         coordinate /= coordinate[-1]
     projected_corners = np.int32(projected_corners[:, :-1])
-    x, y, w, h = cv.boundingRect(projected_corners)
+    # x, y, w, h = cv.boundingRect(projected_corners)
     perspective = cv.warpPerspective(src_img, retval, (dst_img.shape[1], dst_img.shape[0]))
-    cv.imwrite(save_path, perspective)
+    background = cv.cvtColor(dst_img, cv.COLOR_BGR2GRAY)
+    background = cv.cvtColor(background, cv.COLOR_GRAY2BGR)
+    patched_img = patch2background(perspective, projected_corners, background)
+    cv.imwrite(save_path, patched_img)
     return retval, mask
+
+
+def patch2background(src_img, content_corner, background):
+    poly_corners = np.array([content_corner[0], content_corner[1], content_corner[3], content_corner[2]])
+    mask = np.zeros((src_img.shape[0], src_img.shape[1]))
+    mask = cv.fillPoly(mask, [poly_corners], color=1)
+    min_x = poly_corners[:, 0].min()
+    max_x = poly_corners[:, 0].max()
+    min_y = poly_corners[:, 1].min()
+    max_y = poly_corners[:, 1].max()
+    for x in range(min_x, max_x + 1):
+        for y in range(min_y, max_y + 1):
+            if mask[y][x] == 1:
+                background[y][x] = src_img[y][x]
+    return background
 
 
 if __name__ == '__main__':
@@ -151,4 +169,5 @@ if __name__ == '__main__':
         cv.imwrite(os.path.join(out_dir, filename), roted)
         anno_corners.append(rot_corners)
     print(anno_corners)
-
+    '''img = patch2background()
+    cv.imwrite('./patch.jpg', img)'''

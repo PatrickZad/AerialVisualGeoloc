@@ -1,9 +1,11 @@
 from cv2 import cv2 as cv
 import numpy as np
 import os
-
-data_dir = r'/home/patrick/PatrickWorkspace/Datasets/UAVgeolocalization'
-expr_base = r'/home/patrick/PatrickWorkspace/AerialVisualGeolocalization/expriments/match_task'
+cwd = os.getcwd()
+proj_dir=os.path.dirname(cwd)
+common_dir = os.path.dirname(proj_dir)
+data_dir = os.path.join(common_dir,'Datasets','UAVgeolocalization')
+expr_base = os.path.join(proj_dir,'expriments','match_task')
 
 
 def default_corners(img):
@@ -155,7 +157,6 @@ def patch2background(src_img, content_corner, background):
             if mask[y][x] == 1:
                 background[y][x] = src_img[y][x]
     return background
-
 
 if __name__ == '__main__':
     origin_frame_dir = os.path.join(data_dir, 'Image', 'Village0', 'original frames')

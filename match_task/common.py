@@ -5,12 +5,12 @@ cwd = os.getcwd()
 proj_dir=os.path.dirname(cwd)
 common_dir = os.path.dirname(proj_dir)
 data_dir = os.path.join(common_dir,'Datasets','UAVgeolocalization')
-expr_base = os.path.join(proj_dir,'expriments','match_task')
+expr_base = os.path.join(proj_dir,'experiments','match_task')
 
 
 def default_corners(img):
-    return np.array([[0, 0], [img.shape[1], 0], [
-        0, img.shape[0]], [img.shape[1], img.shape[0]]])
+    return np.array([[0, 0], [img.shape[1]-1, 0], [
+        0, img.shape[0]-1], [img.shape[1]-1, img.shape[0]-1]])
 
 
 def adaptive_affine(img, affine_mat, content_corners=None):
@@ -126,7 +126,7 @@ def draw_match(img1, img1_points, img2, img2_points, matches, path):
 def homography(src_img, dst_img, src_points, dst_points, save_path, src_corners=None):
     if src_corners is None:
         src_corners = default_corners(src_img)
-    retval, mask = cv.findHomography(src_points, dst_points, method=cv.RANSAC)
+    retval, mask = cv.findHomography(src_points, dst_points, method=cv.RANSAC,ransacReprojThreshold=1,maxIters=4096)
     if retval is None:
         return retval, mask
     # print(retval)

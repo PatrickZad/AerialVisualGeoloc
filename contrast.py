@@ -1,5 +1,6 @@
-from match_task.common import *
-from match_task import asiftmatch, siftmatch
+from common import *
+import siftmatch
+import asiftmatch
 import cv2 as cv
 
 if __name__ == '__main__':

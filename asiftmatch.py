@@ -1,4 +1,4 @@
-from match_task.common import *
+from common import *
 import heapq
 
 

@@ -1,4 +1,4 @@
-from match_task.common import *
+from common import *
 
 
 def detect_compute(img, content_corners=None, draw=None):

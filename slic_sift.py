@@ -150,18 +150,25 @@ def detect_compute(img, compactness=None, content_corners=None, draw=None, calc_
 
     if draw is not None:
         copy = img.copy()
-        corner_thred = corner_mask.max() * 0.01
-        for y in range(img.shape[0]):
-            for x in range(img.shape[1]):
-                if content_mask[y][x] == 255:
-                    if slic_mask[y][x] == 255:
-                        if corner_mask[y][x] > corner_thred:
-                            copy[y][x] = (255, 0, 0)
-                        else:
-                            copy[y][x] = (0, 0, 255)
-                    elif corner_mask[y][x] > corner_thred:
-                        copy[y][x] = (0, 255, 0)
-        cv.imwrite(draw, copy)
+        if detect_corner:
+            corner_thred = corner_mask.max() * 0.01
+            for y in range(img.shape[0]):
+                for x in range(img.shape[1]):
+                    if content_mask[y][x] == 255:
+                        if slic_mask[y][x] == 255:
+                            if corner_mask[y][x] > corner_thred:
+                                copy[y][x] = (255, 0, 0)
+                            else:
+                                copy[y][x] = (0, 0, 255)
+                        elif corner_mask[y][x] > corner_thred:
+                            copy[y][x] = (0, 255, 0)
+            cv.imwrite(draw, copy)
+        else:
+            for y in range(img.shape[0]):
+                for x in range(img.shape[1]):
+                    if content_mask[y][x] == 255 and slic_mask[y][x] == 255:
+                        copy[y][x] = (0, 0, 255)
+            cv.imwrite(draw, copy)
     return points, descriptors
 
 
@@ -811,7 +818,7 @@ def map_features(mapimg, calc_orien=False, with_corners=False, neighbors=1, unit
 def eval(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1, ransac_param=(1, 4096), unit=False):
     import pandas as pd
     import logging
-
+    print(result_dir)
     base_dir = os.path.join(data_dir, 'Image', 'Village0')
     corrected_frame_dir = os.path.join(base_dir, 'loc')
     reference = cv.imread(map_path)
@@ -820,29 +827,23 @@ def eval(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1, ransac_
     map_points, map_descs = map_features(reference, pt_indices_dict=pt_indices, with_corners=det_corner,
                                          calc_orien=calc_orien, unit=unit)
     corners = pd.read_csv(os.path.join(corrected_frame_dir, 'corners.csv'))
-    correspondence = pd.read_csv(os.path.join(corrected_frame_dir, 'correspondence_points.csv'))
     expr_dir = os.path.join(expr_base, 'anno_frame_match', 'eval', result_dir)
     logging.basicConfig(filename=os.path.join(expr_dir, 'eval_log'), level=logging.INFO,
                         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
     logging.basicConfig()
-    frames = correspondence.index
-    for frame_file in frames:
+    id = 1
+    while id < 17:
+        fileid = 'loc' + str(id)
+        frame_file = 'loc' + str(id) + '.JPG'
         logger.info(frame_file)
         fileid = frame_file[:-4]
+        id += 2
         frame = cv.imread(os.path.join(corrected_frame_dir, frame_file))
         corner = np.array([[corners.loc[frame_file, 'x1'], corners.loc[frame_file, 'y1']],
                            [corners.loc[frame_file, 'x2'], corners.loc[frame_file, 'y2']],
                            [corners.loc[frame_file, 'x0'], corners.loc[frame_file, 'y0']],
                            [corners.loc[frame_file, 'x3'], corners.loc[frame_file, 'y3']]])
-        test_list = []
-        for i in range(1, 6):
-            test_list.append([correspondence.loc[frame_file, 'x' + str(i) + '_1'],
-                              correspondence.loc[frame_file, 'y' + str(i) + '_1']])
-        target_list = []
-        for i in range(1, 6):
-            target_list.append([correspondence.loc[frame_file, 'x' + str(i) + '_2'],
-                                correspondence.loc[frame_file, 'y' + str(i) + '_2']])
         match_result = []
         print('Computing ' + fileid)
         frame_points, frame_descs = detect_compute(frame, compactness, content_corners=corner,
@@ -886,8 +887,6 @@ def eval(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1, ransac_
                            os.path.join(expr_dir, fileid + '_corrected_slic_match.png'))
                 draw_match(frame, match_result[0][0], reference, match_result[0][1], valid_matches,
                            os.path.join(expr_dir, fileid), 8, fileid, retval)
-
-                warp_error(test_list, target_list, retval, logger)
                 warp_error(match_test_list, match_target_list, retval, logger)
                 '''logger.info('Match distances: ')
                 logger.info(str(match_distances))'''
@@ -895,7 +894,7 @@ def eval(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1, ransac_
 
 def eval_on_crops(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1, ransac_param=(1, 4096), unit=False):
     import logging
-
+    print(result_dir)
     base_dir = os.path.join(data_dir, 'Image', 'Village0', 'crop_loc')
     corrected_frame_dir = os.path.join(base_dir, 'balance_crops')
     map_path = os.path.join(base_dir, 'map', 'map.jpg')
@@ -909,12 +908,16 @@ def eval_on_crops(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1
                         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
     logging.basicConfig()
-    frames = os.listdir(corrected_frame_dir)
-    for frame_file in frames:
-        if frame_file[-3:] != 'JPG':
-            continue
+    id = 0
+    idx = 1
+    while id < 17:
+        frame_file = 'loc' + str(id) + '_' + str(idx) + '.JPG'
         logger.info(frame_file)
         fileid = frame_file[:-4]
+        id += 2
+        idx = (idx + 1) % 4
+        if idx == 0:
+            idx = 1
         frame = cv.imread(os.path.join(corrected_frame_dir, frame_file))
         match_result = []
         print('Computing ' + fileid)
@@ -936,7 +939,8 @@ def eval_on_crops(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1
             img1_points = np.array(img1_points).reshape((-1, 1, 2))
             img2_points = np.array(img2_points).reshape((-1, 1, 2))
             retval, mask = homography(frame, reference, img1_points, img2_points,
-                                      save_path=os.path.join(expr_dir, fileid + '_slic-homography.png'))
+                                      save_path=os.path.join(expr_dir, fileid + '_slic-homography.png'),
+                                      ransac_thrd=ransac_param[0], ransac_iter=ransac_param[1])
             logger.info('Homography: ')
             logger.info(str(retval))
             if retval is None:
@@ -971,9 +975,9 @@ if __name__ == '__main__':
 
     # eval_on_crops('crop_0orien_nmap_corner', det_corner=True, nmap=7)
     # eval_on_crops('crop_0orien_nmap_corner_unit', det_corner=True, nmap=7, unit=True)
-    eval('0orien')
-    eval('0orien_default_ransac', ransac_param=(3, 2000))
-    eval('0orien_nloc', nloc=7)
+    #eval('0orien')
+    #eval('0orien_default_ransac', ransac_param=(3, 2000))
+    #eval('0orien_nloc', nloc=7)
     eval('0orien_nmap', nmap=7)
     # eval()
     '''demo_create()

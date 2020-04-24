@@ -1,5 +1,7 @@
 /experiments
 /expriments
 /__pycache
+/__pycache__
 /.idea
 /.vscode
+*.pyc

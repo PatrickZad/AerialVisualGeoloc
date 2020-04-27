@@ -815,7 +815,8 @@ def map_features(mapimg, calc_orien=False, with_corners=False, neighbors=1, unit
     return map_points, map_descs
 
 
-def eval(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1, ransac_param=(1, 4096), unit=False):
+def eval(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1, ransac_param=(1, 4096), unit=False,
+         map_refine=None):
     import pandas as pd
     import logging
     print(result_dir)
@@ -856,7 +857,7 @@ def eval(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1, ransac_
                                                  (map_points, map_descs),
                                                  draw=os.path.join(expr_dir, fileid + '_slic_match.png'),
                                                  match_result=match_result, unit_desc=unit, neighbor_refine=nmap,
-                                                 sift_method=True, refine='neighbor', map_pt_indices=pt_indices)
+                                                 sift_method=True, refine=map_refine, map_pt_indices=pt_indices)
         logger.info(fileid + ' match complete !')
         if len(img1_points) < 4 or len(img2_points) < 4:
             logger.info(fileid + ' match failed !')
@@ -892,7 +893,8 @@ def eval(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1, ransac_
                 logger.info(str(match_distances))'''
 
 
-def eval_on_crops(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1, ransac_param=(1, 4096), unit=False):
+def eval_on_crops(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1, ransac_param=(1, 4096), unit=False,
+                  map_refine=None):
     import logging
     print(result_dir)
     base_dir = os.path.join(data_dir, 'Image', 'Village0', 'crop_loc')
@@ -931,7 +933,7 @@ def eval_on_crops(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1
                                                  (map_points, map_descs),
                                                  draw=os.path.join(expr_dir, fileid + '_slic_match.png'),
                                                  match_result=match_result, unit_desc=unit, neighbor_refine=nmap,
-                                                 sift_method=True, refine='neighbor', map_pt_indices=pt_indices)
+                                                 sift_method=True, refine=map_refine, map_pt_indices=pt_indices)
         logger.info(fileid + ' match complete !')
         if len(img1_points) < 4 or len(img2_points) < 4:
             logger.info(fileid + ' match failed !')
@@ -973,13 +975,15 @@ if __name__ == '__main__':
     import pickle
     import pandas as pd
 
-    # eval_on_crops('crop_0orien_nmap_corner', det_corner=True, nmap=7)
-    # eval_on_crops('crop_0orien_nmap_corner_unit', det_corner=True, nmap=7, unit=True)
+    #eval_on_crops('crop_0orien_nmap_corner', det_corner=True, nmap=7)
     #eval('0orien')
     #eval('0orien_default_ransac', ransac_param=(3, 2000))
-    #eval('0orien_nloc', nloc=7)
-    eval('0orien_nmap', nmap=7)
-    # eval()
+    eval('0orien_nloc', nloc=7)
+    # eval_on_crops('crop_0orien_nmap_corner_unit', det_corner=True, nmap=7, unit=True)
+    # eval('0orien_nmap', nmap=7)
+    # eval('0orien_nmap_corner', det_corner=True)
+    # eval('calc_orien', calc_orien=True)
+    #eval('0orien_ncc_corner', det_corner=True, map_refine='ncc')
     '''demo_create()
     proc_pool = Pool(4)'''
     # orien_test()

@@ -65,7 +65,7 @@ def compute_task(img, detected_points, final_points, desc_arrays, lock):
 
 
 def detect_compute(img, compactness=None, content_corners=None, draw=None, calc_oriens=False, detect_corner=False,
-                   neighbor_refine=1, unit_length=False, sub_pixel=False):
+                   neighbor_refine=1, unit_length=False, sub_pixel=False, subpx_drop=True):
     # TODO use only one Pool
     if content_corners is None:
         content_corners = default_corners(img)
@@ -87,7 +87,7 @@ def detect_compute(img, compactness=None, content_corners=None, draw=None, calc_
     if sub_pixel:
         gray_img = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
         gray_img.astype(np.float32)
-        gray_img /= 255
+        gray_img = gray_img / 255
     # keypoints = []
     # keypoints_dict = {}
     '''pool = Pool(multi_p)
@@ -123,7 +123,11 @@ def detect_compute(img, compactness=None, content_corners=None, draw=None, calc_
                     reloc = subpixel_refine(gray_img, (x, y))
                     if reloc is not None:
                         keypoints.append(cv_point(reloc))
+                    elif not subpx_drop:
+                        keypoints.append(cv_point((x, y)))
                     continue
+
+                    ''''''
                 if calc_oriens:
                     # TODO subpixel orien
                     coord = str(x) + ',' + str(y)
@@ -215,6 +219,7 @@ def feature_match(img1, img2, img1_features=None, img2_features=None, map_pt_ind
                 corresponding1.append(img1_point[m.queryIdx].pt)
                 distances.append(m.distance)
                 if subpixel:
+                    corresponding2.append(img2_point[m.trainIdx].pt)
                     continue
                 if refine == refines[0]:
                     if neighbor_refine > 1:
@@ -449,16 +454,20 @@ def subpixel_refine(gray_img, coord, reject_thred=0.03):
         dyy = gray_img[y + 1][x] - 2 * gray_img[y][x] + gray_img[y - 1][x]
         Jac = np.array([dx, dy])
         Hes = np.array([[dxx, dxy], [dxy, dyy]])
-        offset = -np.linalg.inv(Hes).dot(Jac)
-        pt = (coord[0] + offset[0], coord[1] + offset[1])
-        contrast = gray_img[y][x] + 0.5 * Jac.dot(offset)
-        re_localize = [coord[0], coord[1]]
-        if offset[0] > 0.5:
-            re_localize[0] += 1
-        if offset[1] > 0.5:
-            re_localize[1] += 1
-        if re_localize[0] != coord[0] or re_localize[1] != coord[1]:
-            pt, contrast = relocalize(gray_img, re_localize)
+        try:
+            offset = -np.linalg.inv(Hes).dot(Jac)
+            pt = (coord[0] + offset[0], coord[1] + offset[1])
+            contrast = gray_img[y][x] + 0.5 * Jac.dot(offset)
+            re_localize = [coord[0], coord[1]]
+            if offset[0] > 0.5:
+                re_localize[0] += 1
+            if offset[1] > 0.5:
+                re_localize[1] += 1
+            if re_localize[0] != coord[0] or re_localize[1] != coord[1]:
+                pt, contrast = relocalize(gray_img, re_localize)
+        except BaseException as e:
+            contrast = None
+            pt = None
         return pt, contrast
 
     pt, contrast = relocalize(gray_img, coord)
@@ -801,13 +810,13 @@ def viewpoint_test():
 
 
 def map_features(mapimg, calc_orien=False, with_corners=False, neighbors=1, unit=False, pt_indices_dict=None,
-                 subpixel=False):
+                 subpixel=False, subpx_drop=True):
     binary_prefix = 'map_features'
     binary_postfix = '.pkl'
     orien = '_0orien' if not calc_orien else '_calc_orien'
     corners = '' if not with_corners else '_corners'
     unit = '' if not unit else '_unit'
-    sub_pixel = '' if not subpixel else '_subpixel'
+    sub_pixel = '' if not subpixel else '_subpixel' + '_drop' if subpx_drop else '_nodrop'
     neighbor = '_n' + str(neighbors)
     binary_filename = binary_prefix + orien + neighbor + corners + unit + sub_pixel + binary_postfix
     map_binary = os.path.join(binary_dir, binary_filename)
@@ -840,7 +849,7 @@ def map_features(mapimg, calc_orien=False, with_corners=False, neighbors=1, unit
                 return map_points, map_descs
         map_points, map_descs = detect_compute(mapimg, compactness, draw=os.path.join(expr_base, 'map_slic.png'),
                                                calc_oriens=calc_orien, neighbor_refine=neighbors, unit_length=unit,
-                                               sub_pixel=subpixel)
+                                               sub_pixel=subpixel, subpx_drop=subpx_drop)
         print('Map feartures calculated !')
         pt_vals = []
         for point in map_points:
@@ -898,12 +907,14 @@ def eval(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1, ransac_
                            [corners.loc[frame_file, 'x3'], corners.loc[frame_file, 'y3']]])
         match_result = []
         print('Computing ' + fileid)
+        logger.info('Computing ' + fileid)
         frame_points, frame_descs = detect_compute(frame, compactness, content_corners=corner,
                                                    draw=os.path.join(expr_dir, fileid + '_slic.png'),
                                                    calc_oriens=calc_orien, neighbor_refine=nloc,
                                                    unit_length=unit, detect_corner=det_corner, sub_pixel=subpixel)
         logger.info('Frame ' + fileid + ' features calculated !')
         print('Matching ' + fileid)
+        logger.info('Matching ' + fileid)
         img1_points, img2_points = feature_match(frame, reference, (frame_points, frame_descs),
                                                  (map_points, map_descs),
                                                  draw=os.path.join(expr_dir, fileid + '_slic_match.png'),
@@ -916,6 +927,7 @@ def eval(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1, ransac_
         else:
             img1_points = np.array(img1_points).reshape((-1, 1, 2))
             img2_points = np.array(img2_points).reshape((-1, 1, 2))
+            logger.info('Warpping ' + fileid)
             retval, mask = homography(frame, reference, img1_points, img2_points, src_corners=corner,
                                       save_path=os.path.join(expr_dir, fileid + '_slic-homography.png'),
                                       ransac_thrd=ransac_param[0], ransac_iter=ransac_param[1])
@@ -975,12 +987,14 @@ def eval_on_crops(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1
         frame = cv.imread(os.path.join(corrected_frame_dir, frame_file))
         match_result = []
         print('Computing ' + fileid)
+        logger.info('Computing ' + fileid)
         frame_points, frame_descs = detect_compute(frame, compactness,
                                                    draw=os.path.join(expr_dir, fileid + '_slic.png'),
                                                    calc_oriens=calc_orien, neighbor_refine=nloc,
                                                    unit_length=unit, detect_corner=det_corner)
         logger.info('Frame ' + fileid + ' features calculated !')
         print('Matching ' + fileid)
+        logger.info('Matching ' + fileid)
         img1_points, img2_points = feature_match(frame, reference, (frame_points, frame_descs),
                                                  (map_points, map_descs),
                                                  draw=os.path.join(expr_dir, fileid + '_slic_match.png'),
@@ -992,6 +1006,7 @@ def eval_on_crops(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1
         else:
             img1_points = np.array(img1_points).reshape((-1, 1, 2))
             img2_points = np.array(img2_points).reshape((-1, 1, 2))
+            logger.info('Warpping ' + fileid)
             retval, mask = homography(frame, reference, img1_points, img2_points,
                                       save_path=os.path.join(expr_dir, fileid + '_slic-homography.png'),
                                       ransac_thrd=ransac_param[0], ransac_iter=ransac_param[1])
@@ -1028,16 +1043,17 @@ if __name__ == '__main__':
     import pandas as pd
 
     # eval_on_crops('crop_0orien_nmap_corner', det_corner=True, nmap=7)
-    # eval('0orien')
-    # eval('0orien_default_ransac', ransac_param=(3, 2000))
-    # eval('0orien_nloc', nloc=7)
     # eval_on_crops('crop_0orien_nmap_corner_unit', det_corner=True, nmap=7, unit=True)
-    # eval('0orien_nmap', nmap=7)
-    # eval('0orien_nmap_corner', det_corner=True)
-    # eval('calc_orien', calc_orien=True)
-    # eval('0orien_ncc_corner', det_corner=True, map_refine='ncc')
-    eval('subpx_0orien', subpixel=True)
-    eval('subpx_0orien_unit', unit=True, subpixel=True)
+    eval('subpx_0orien_withdrop', subpixel=True)
+    eval('subpx_0orien_unit_withdrop', unit=True, subpixel=True)
+    eval('0orien')
+    eval('0orien_default_ransac', ransac_param=(3, 2000))
+    eval('0orien_nloc', nloc=7)
+    eval('0orien_nmap', nmap=7)
+    eval('0orien_nmap_corner', det_corner=True)
+    eval('calc_orien', calc_orien=True)
+    eval('0orien_ncc_corner', det_corner=True, map_refine='ncc')
+
     '''demo_create()
     proc_pool = Pool(4)'''
     # orien_test()

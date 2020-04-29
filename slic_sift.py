@@ -962,7 +962,7 @@ def eval_on_crops(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1
     import logging
     print(result_dir)
     base_dir = os.path.join(data_dir, 'Image', 'Village0', 'crop_loc')
-    corrected_frame_dir = os.path.join(base_dir, 'balance_crops')
+    corrected_frame_dir = os.path.join(base_dir, 'center_crops')
     map_path = os.path.join(base_dir, 'map', 'map.jpg')
     expr_dir = os.path.join(expr_base, 'anno_frame_match', 'eval', result_dir)
     reference = cv.imread(map_path)
@@ -975,15 +975,17 @@ def eval_on_crops(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1
     logger = logging.getLogger(__name__)
     logging.basicConfig()
     id = 0
-    idx = 1
+    # idx = 1
     while id < 17:
-        frame_file = 'loc' + str(id) + '_' + str(idx) + '.JPG'
+        # frame_file = 'loc' + str(id) + '_' + str(idx) + '.JPG'
+        frame_file = 'center_loc' + str(id) + '.JPG'
         logger.info(frame_file)
         fileid = frame_file[:-4]
-        id += 2
-        idx = (idx + 1) % 4
+        # id += 2
+        id += 1
+        '''idx = (idx + 1) % 4
         if idx == 0:
-            idx = 1
+            idx = 1'''
         frame = cv.imread(os.path.join(corrected_frame_dir, frame_file))
         match_result = []
         print('Computing ' + fileid)

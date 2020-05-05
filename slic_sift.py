@@ -892,7 +892,6 @@ def eval(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1, ransac_
     logging.basicConfig(filename=os.path.join(expr_dir, 'eval_log'), level=logging.INFO,
                         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
-    logging.basicConfig()
     id = 1
     while id < 17:
         fileid = 'loc' + str(id)
@@ -973,7 +972,6 @@ def eval_on_crops(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1
     logging.basicConfig(filename=os.path.join(expr_dir, 'eval_log'), level=logging.INFO,
                         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
-    logging.basicConfig()
     id = 0
     # idx = 1
     while id < 17:

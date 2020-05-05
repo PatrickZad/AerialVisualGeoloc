@@ -285,20 +285,21 @@ def center_of_corners(corners):
 
 
 def warp_error(test_pts, target_pts, homo_mat, log=None):
-    test_points_array = np.array(test_pts)
-    homog_tests = np.concatenate([test_points_array, np.ones((len(test_pts), 1))], axis=1)
-    homog_estimates = np.matmul(homog_tests, homo_mat.T)
-    homog_estimates /= homog_estimates[:, 2:]
-    target_array = np.array(target_pts)
-    estimate_array = homog_estimates[:, :-1]
-    square_error = (target_array - estimate_array) ** 2
+    # homo_mat is h*3*3
+    # test_pts and target_pts are n*k*2
+    assert len(homo_mat.shape) == len(test_pts.shape) == len(target_pts.shape) == 3
+    homog_tests = np.concatenate([test_pts, np.ones((test_pts.shape[0], test_pts.shape[1], 1))], axis=-1)
+    homog_estimates = np.matmul(homog_tests, np.transpose(homo_mat, (0, 2, 1)))
+    homog_estimates /= homog_estimates[..., -1:]
+    estimate_array = homog_estimates[..., :-1]
+    square_error = (target_pts - estimate_array) ** 2
     point_wise_error = (np.sum(square_error, axis=-1)) ** 0.5
     average_error = np.mean(point_wise_error, axis=-1)
     if log is not None:
         log.info('Test points: ')
-        log.info(str(test_points_array))
+        log.info(str(test_pts))
         log.info('Target points: ')
-        log.info(str(target_array))
+        log.info(str(target_pts))
         log.info('Estimated points: ')
         log.info(str(estimate_array))
         log.info('Point-wise error: ')
@@ -308,69 +309,159 @@ def warp_error(test_pts, target_pts, homo_mat, log=None):
 
 
 if __name__ == '__main__':
-    '''origin_frame_dir = os.path.join(data_dir, 'Image', 'Village0', 'original frames')
-    out_dir = os.path.join(data_dir, 'Image', 'Village0', 'anno_corrected_loc')
-    files = os.listdir(origin_frame_dir)
-    anno_corners = []
-    for filename in files:
-        img = cv.imread(os.path.join(origin_frame_dir, filename))
-        scaled, scale_mat, scale_corners = adaptive_scale(img, 0.15)
-        roted, rot_mat, rot_corners = rotation_phi(scaled, -132, scale_corners)
-        cv.imwrite(os.path.join(out_dir, filename), roted)
-        anno_corners.append(rot_corners)
-    print(anno_corners)'''
-    '''img = patch2background()
-    cv.imwrite('./patch.jpg', img)'''
     import pandas as pd
+    import logging
 
-    pt_file = '/home/patrick/PatrickWorkspace/Datasets/UAVgeolocalization/Image/Village0/' \
-              'loc/loc2_centered_correspondences.csv'
-    pt_file = '/home/patrick/PatrickWorkspace/Datasets/UAVgeolocalization/Image/Village0/' \
-              'crop_loc/balance_crops/loc2_3_centered_correspondences.csv'
-    pt_csv = pd.read_csv(pt_file)
-    pt_indices = pt_csv.index
-    test_pts = []
-    target_pts = []
-    for idx in pt_indices:
-        loc_corners = np.array([[pt_csv.loc[idx, 'loc_x1'], pt_csv.loc[idx, 'loc_y1']],
-                                [pt_csv.loc[idx, 'loc_x2'], pt_csv.loc[idx, 'loc_y2']],
-                                [pt_csv.loc[idx, 'loc_x3'], pt_csv.loc[idx, 'loc_y3']],
-                                [pt_csv.loc[idx, 'loc_x4'], pt_csv.loc[idx, 'loc_y4']]])
-        test_pts.append(center_of_corners(loc_corners))
-        map_corners = np.array([[pt_csv.loc[idx, 'map_x1'], pt_csv.loc[idx, 'map_y1']],
-                                [pt_csv.loc[idx, 'map_x2'], pt_csv.loc[idx, 'map_y2']],
-                                [pt_csv.loc[idx, 'map_x3'], pt_csv.loc[idx, 'map_y3']],
-                                [pt_csv.loc[idx, 'map_x4'], pt_csv.loc[idx, 'map_y4']]])
-        target_pts.append(center_of_corners(map_corners))
-    # loc neighbor refine
-    retval = np.array([[9.46871526e-01, -1.01905502e+00, 3.85965237e+03],
-                       [1.00280253e-01, 3.68942000e-01, 1.20087459e+03],
-                       [4.92943751e-05, -2.34958096e-04, 1.00000000e+00]])
-    # ncc refine
-    retval = np.array([[6.72028576e-01, -7.21392580e-01, 3.85789143e+03],
-                       [-2.32925212e-02, 5.12697781e-01, 1.19038493e+03],
-                       [-1.57932502e-05, -1.65508968e-04, 1.00000000e+00]])
-    # loc neighbor unit
-    retval = np.array([[6.87231054e-01, -9.95046332e-01, 3.86841524e+03],
-                       [-4.42473396e-03, 3.67276128e-01, 1.21040320e+03],
-                       [-9.42593135e-06, -2.27342257e-04, 1.00000000e+00]])
-    # map neighbor refine
-    retval = np.array([[6.29182113e-01, -8.06677224e-01, 3.86403436e+03],
-                       [-3.63584785e-02, 4.51432594e-01, 1.20949732e+03],
-                       [-2.46397052e-05, - 1.84269618e-04, 1.00000000e+00]])
-    # loc2_1
-    retval = np.array([[1.00155061e+00, -1.20699765e+00, 4.27479258e+03],
-                       [8.02890018e-02, 4.09408704e-01, 1.67747176e+03],
-                       [3.81050255e-05, -2.76158193e-04, 1.00000000e+00]])
-    # loc2_2
-    retval = np.array([[-1.36908449e+01, -9.03569888e-01, 4.06420903e+03],
-                       [-5.45102474e+00, -1.43769223e-01, 1.56609601e+03],
-                       [-3.38855602e-03, -2.18137033e-04, 1.00000000e+00]])
-    # loc2_3
-    retval = np.array([[-2.33242695e+00, 1.07429069e+00, 4.20984550e+03],
-                       [-1.19278636e+00, 1.09960441e+00, 1.49175137e+03],
-                       [-7.00629802e-04, 2.51175618e-04, 1.00000000e+00]])
-    warp_error(test_pts, target_pts, retval)
+    logging.basicConfig(filename=os.path.join(expr_base, 'eval', 'handpick_eval'), level=logging.INFO,
+                        format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+    logger = logging.getLogger(__name__)
+    '''center locs'''
+    loc_data_dir = os.path.join(data_dir, 'Image', 'Village0', 'crop_loc', 'center_crops')
+    loc_ids = list(range(0, 17, 2))
+    # crop_subpx_0orien_withdrop
+    retvals0 = np.array([
+        [[-6.26324013e+00, -5.02172304e+00, 4.55360656e+03],
+         [-2.01195326e+00, -1.08854429e+00, 1.36386045e+03],
+         [-1.44977486e-03, -1.07000405e-03, 1.00000000e+00]],
+        [[1.12362459e+00, - 1.97120551e+00, 4.10692227e+03],
+         [1.48817242e-01, 2.64788642e-02, 1.56762950e+03],
+         [7.69191332e-05, - 4.55472619e-04, 1.00000000e+00]],
+        [[1.10871803e-01, 3.62364815e-01, 3.89749336e+03],
+         [-3.55495795e-01, 1.02075383e+00, 1.90401268e+03],
+         [-1.78562832e-04, 8.82267596e-05, 1.00000000e+00]],
+        [[2.17575825e-01, - 9.00028319e-01, 3.59268736e+03],
+         [-4.27675486e-01, 2.60014268e-01, 2.11563883e+03],
+         [-1.53750426e-04, - 2.54386397e-04, 1.00000000e+00]],
+        [[5.69951359e-01, - 6.98398429e-01, 3.29303454e+03],
+         [-1.91646176e-01, 3.39167187e-01, 2.33881419e+03],
+         [-7.39155719e-05, - 2.03175481e-04, 1.00000000e+00]],
+        [[-3.16856181e-01, - 2.34686125e+00, 3.01760490e+03],
+         [-8.58748448e-01, - 1.33439529e+00, 2.60683603e+03],
+         [-3.09612011e-04, - 7.41912304e-04, 1.00000000e+00]],
+        [[2.06384704e+00, - 1.47154930e+00, 2.69788757e+03],
+         [1.35316383e+00, - 7.84333659e-01, 2.88954268e+03],
+         [4.70499146e-04, - 5.29556560e-04, 1.00000000e+00]],
+        [[4.63902647e-01, - 1.08299252e+00, 2.43625136e+03],
+         [-2.97210965e-01, - 6.49732420e-01, 3.14980329e+03],
+         [-9.83142290e-05, - 4.21104913e-04, 1.00000000e+00]],
+        [[6.83897879e-01, - 1.20858853e+00, 2.20271294e+03],
+         [-1.04756516e-02, - 1.00886701e+00, 3.46522738e+03],
+         [-2.20378241e-05, - 4.95748888e-04, 1.00000000e+00]]
+    ])
+    # crop_subpx_0orien_nodrop
+    retvals1 = np.array([
+        [[-7.23835376e+00, 1.19727330e+00, 4.53926506e+03],
+         [-2.32638099e+00, 9.35458606e-01, 1.34891634e+03],
+         [-1.67607733e-03, 2.70778784e-04, 1.00000000e+00]],
+        [[1.09024558e+00, - 4.91935467e-01, 4.09398632e+03],
+         [9.72883059e-02, 7.07220511e-01, 1.55508642e+03],
+         [5.24063161e-05, - 1.06274425e-04, 1.00000000e+00]],
+        [[1.68211018e+00, - 2.09661962e+00, 3.90152755e+03],
+         [3.99256420e-01, - 1.67566377e-01, 1.90463552e+03],
+         [2.15783575e-04, - 5.18444446e-04, 1.00000000e+00]],
+        [[-4.95988726e-01, - 2.52189035e+00, 3.61169295e+03],
+         [-7.43996543e-01, - 8.59010384e-01, 2.12983489e+03],
+         [-3.15225374e-04, - 6.90181909e-04, 1.00000000e+00]],
+        [[8.26728062e-01, - 6.41500722e-01, 3.28944183e+03],
+         [-2.69799872e-02, 4.10897310e-01, 2.33538264e+03],
+         [-5.54290364e-06, - 1.86582997e-04, 1.00000000e+00]],
+        [[-4.20631725e-01, - 2.97055782e+00, 3.02013855e+03],
+         [-9.20292862e-01, - 1.86459494e+00, 2.60260924e+03],
+         [-3.35463909e-04, - 9.44133959e-04, 1.00000000e+00]],
+        [[-4.04062152e-01, - 2.23077065e+00, 2.71542009e+03],
+         [-1.16036115e+00, - 1.80326389e+00, 2.92798330e+03],
+         [-3.56404107e-04, - 8.01721182e-04, 1.00000000e+00]],
+        [[7.05442365e-01, - 1.62562229e+00, 2.44286363e+03],
+         [4.97628851e-02, - 1.37830263e+00, 3.15807355e+03],
+         [1.51858532e-06, - 6.25866924e-04, 1.00000000e+00]],
+        [[1.36308119e+00, 1.04056568e+00, 2.11843220e+03],
+         [5.08940141e-01, 2.74105287e+00, 3.41839622e+03],
+         [1.29634562e-04, 4.49927411e-04, 1.00000000e+00]]
+    ])
+    # crop_0orien_nmap_corner_unit
+    retvals2 = np.array([
+        [[-3.63778594e+00, - 1.67753707e+00, 4.52217746e+03],
+         [-1.20718808e+00, 1.13526457e-01, 1.33364703e+03],
+         [-9.18523504e-04, - 3.49508635e-04, 1.00000000e+00]],
+        [[3.62554234e+00, 1.62074279e+01, 3.91276902e+03],
+         [8.79179466e-01, 8.16139002e+00, 1.40158152e+03],
+         [4.53659604e-04, 3.79741681e-03, 1.00000000e+00]],
+        [[7.45780101e-01, - 1.63506864e+00, 3.90159959e+03],
+         [-1.13929549e-02, 2.27892737e-03, 1.90646884e+03],
+         [-9.46500226e-06, - 4.09419852e-04, 1.00000000e+00]],
+        [[1.41681890e+00, - 1.48578575e+00, 3.59778106e+03],
+         [3.03351611e-01, - 2.58300413e-02, 2.10338146e+03],
+         [1.65015967e-04, - 4.03437852e-04, 1.00000000e+00]],
+        [[3.43860870e-01, 1.58566622e-01, 3.28771191e+03],
+         [-3.71866114e-01, 9.70529318e-01, 2.33699917e+03],
+         [-1.41437870e-04, 3.59043920e-05, 1.00000000e+00]],
+        [[-3.03836388e-01, - 1.73288532e+00, 3.01332411e+03],
+         [-8.52095534e-01, - 7.57996314e-01, 2.59834751e+03],
+         [-3.11073127e-04, - 5.45452579e-04, 1.00000000e+00]],
+        [[-2.76892461e-01, 1.27323466e+00, 2.68968675e+03],
+         [-1.29924258e+00, 2.39785562e+00, 2.85600726e+03],
+         [-4.07627908e-04, 4.63734268e-04, 1.00000000e+00]],
+        [[3.84134076e-01, - 1.06676626e+00, 2.44227856e+03],
+         [-4.15734393e-01, - 5.76830859e-01, 3.14536035e+03],
+         [-1.33342908e-04, - 4.04595185e-04, 1.00000000e+00]],
+        [[3.58668337e-01, - 5.54727385e-01, 2.31496140e+03],
+         [-5.81087727e-01, 2.31200920e-02, 3.30876125e+03],
+         [-1.76365672e-04, - 2.26698384e-04, 1.00000000e+00]]
+    ])
+    # crop_0orien_nmap_corner
+    retvals3 = np.array([
+        [[-8.40145058e+00, - 3.68110217e+00, 4.54900623e+03],
+         [-2.65534661e+00, - 6.93862040e-01, 1.36183611e+03],
+         [-1.90983673e-03, - 7.90611257e-04, 1.00000000e+00]],
+        [[1.20076737e+00, - 1.22883444e+00, 4.09962230e+03],
+         [1.63761549e-01, 3.55965468e-01, 1.56289515e+03],
+         [8.73869314e-05, - 2.82063214e-04, 1.00000000e+00]],
+        [[-1.78039287e-01, - 7.98505577e-01, 3.90020163e+03],
+         [-4.81405277e-01, 4.14493089e-01, 1.90752780e+03],
+         [-2.38945995e-04, - 2.02983533e-04, 1.00000000e+00]],
+        [[-7.16093962e-01, - 1.52286597e+00, 3.60637193e+03],
+         [-9.13664412e-01, - 2.00778928e-01, 2.12370185e+03],
+         [-3.83695193e-04, - 4.20916201e-04, 1.00000000e+00]],
+        [[3.68737951e-01, - 3.95183205e-01, 3.29377445e+03],
+         [-3.35969580e-01, 5.59153760e-01, 2.33957009e+03],
+         [-1.33061764e-04, - 1.10670155e-04, 1.00000000e+00]],
+        [[8.62997287e-01, - 7.70430015e-01, 2.97055397e+03],
+         [3.24461114e-02, 9.24421979e-02, 2.57942611e+03],
+         [1.41067640e-05, - 2.70593726e-04, 1.00000000e+00]],
+        [[6.88638561e-02, - 9.22417776e-01, 2.68743032e+03],
+         [-7.82727494e-01, - 3.09374081e-01, 2.90494227e+03],
+         [-2.32511512e-04, - 3.51208690e-04, 1.00000000e+00]],
+        [[1.64441165e-01, - 8.85974822e-01, 2.43388224e+03],
+         [-7.04188425e-01, - 3.72871285e-01, 3.14465792e+03],
+         [-2.17399303e-04, - 3.45276127e-04, 1.00000000e+00]],
+        [[5.35150866e-02, - 1.47978008e+00, 2.23063732e+03],
+         [-8.88751382e-01, - 1.52032319e+00, 3.51100338e+03],
+         [-2.48147691e-04, - 6.01628045e-04, 1.00000000e+00]]
+    ])
+    retvals = {'crop_subpx_0orien_withdrop': retvals0, 'crop_subpx_0orien_nodrop': retvals1,
+               'crop_0orien_nmap_corner_unit': retvals2, 'crop_0orien_nmap_corner': retvals3}
+    for desc, retval_array in retvals.items():
+        test_pts = []
+        target_pts = []
+        for idx in loc_ids:
+            csv_file = os.path.join(loc_data_dir, 'center_loc' + str(idx) + '.csv')
+            df = pd.read_csv(csv_file)
+            test_array = np.array([
+                center_of_corners(np.reshape(df['pt1', 'loc_x1':'loc_y4'], (4, 2))),
+                center_of_corners(np.reshape(df['pt2', 'loc_x1':'loc_y4'], (4, 2))),
+                center_of_corners(np.reshape(df['pt3', 'loc_x1':'loc_y4'], (4, 2))),
+                center_of_corners(np.reshape(df['pt4', 'loc_x1':'loc_y4'], (4, 2)))
+            ])
+            test_pts.append(test_array)
+            target_array = np.array([
+                center_of_corners(np.reshape(df['pt1', 'map_x1':'map_y4'], (4, 2))),
+                center_of_corners(np.reshape(df['pt2', 'mao_x1':'map_y4'], (4, 2))),
+                center_of_corners(np.reshape(df['pt3', 'map_x1':'map_y4'], (4, 2))),
+                center_of_corners(np.reshape(df['pt4', 'map_x1':'map_y4'], (4, 2))),
+            ])
+            target_pts.append(target_array)
+        logger.info(desc)
+        warp_error(test_pts, target_pts, retval_array, logger)
     '''origin = cv.imread('/home/patrick/PatrickWorkspace/AerialVisualGeolocalization/experiments/origin.png')
     trans = cv.imread('/home/patrick/PatrickWorkspace/AerialVisualGeolocalization/experiments/trans.png')
     detector = cv.xfeatures2d_SIFT.create()

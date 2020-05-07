@@ -816,7 +816,12 @@ def map_features(mapimg, calc_orien=False, with_corners=False, neighbors=1, unit
     orien = '_0orien' if not calc_orien else '_calc_orien'
     corners = '' if not with_corners else '_corners'
     unit = '' if not unit else '_unit'
-    sub_pixel = '' if not subpixel else '_subpixel' + '_drop' if subpx_drop else '_nodrop'
+    sub_pixel = '' if not subpixel else '_subpixel'
+    if subpixel:
+        if subpx_drop:
+            sub_pixel += '_drop'
+        else:
+            sub_pixel += '_nodrop'
     neighbor = '_n' + str(neighbors)
     binary_filename = binary_prefix + orien + neighbor + corners + unit + sub_pixel + binary_postfix
     map_binary = os.path.join(binary_dir, binary_filename)
@@ -951,7 +956,10 @@ def eval(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1, ransac_
                            os.path.join(expr_dir, fileid + '_corrected_slic_match.png'))
                 draw_match(frame, match_result[0][0], reference, match_result[0][1], valid_matches,
                            os.path.join(expr_dir, fileid), 8, fileid, retval)
-                warp_error(match_test_list, match_target_list, retval, logger)
+                match_test_list = np.array(match_test_list)
+                match_target_list = np.array(match_target_list)
+                warp_error(np.expand_dims(match_test_list, axis=0), np.expand_dims(match_target_list, axis=0),
+                           np.expand_dims(retval, axis=0), logger)
                 '''logger.info('Match distances: ')
                 logger.info(str(match_distances))'''
 
@@ -1044,15 +1052,15 @@ if __name__ == '__main__':
 
     # eval_on_crops('crop_0orien_nmap_corner', det_corner=True, nmap=7)
     # eval_on_crops('crop_0orien_nmap_corner_unit', det_corner=True, nmap=7, unit=True)
-    eval('subpx_0orien_withdrop', subpixel=True)
-    eval('subpx_0orien_unit_withdrop', unit=True, subpixel=True)
-    eval('0orien')
-    eval('0orien_default_ransac', ransac_param=(3, 2000))
-    eval('0orien_nloc', nloc=7)
-    eval('0orien_nmap', nmap=7)
-    eval('0orien_nmap_corner', det_corner=True)
+    # eval('subpx_0orien_withdrop', subpixel=True)
+    # eval('subpx_0orien_unit_withdrop', unit=True, subpixel=True)
+    # eval('0orien')
+    # eval('0orien_default_ransac', ransac_param=(3, 2000))
+    #eval('0orien_nloc', nloc=7)
+    # eval('0orien_nmap', nmap=7)
+    # eval('0orien_nmap_corner', det_corner=True)
     eval('calc_orien', calc_orien=True)
-    eval('0orien_ncc_corner', det_corner=True, map_refine='ncc')
+    # eval('0orien_ncc_corner', det_corner=True, map_refine='ncc')
 
     '''demo_create()
     proc_pool = Pool(4)'''

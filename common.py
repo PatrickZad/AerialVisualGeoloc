@@ -295,6 +295,8 @@ def warp_error(test_pts, target_pts, homo_mat, log=None):
     square_error = (target_pts - estimate_array) ** 2
     point_wise_error = (np.sum(square_error, axis=-1)) ** 0.5
     average_error = np.mean(point_wise_error, axis=-1)
+    if average_error.shape[0] > 1:
+        mean_average_error = np.mean(average_error)
     if log is not None:
         log.info('Test points: ')
         log.info(str(test_pts))
@@ -306,18 +308,23 @@ def warp_error(test_pts, target_pts, homo_mat, log=None):
         log.info(str(point_wise_error))
         log.info('Average error: ')
         log.info(str(average_error))
+        if average_error.shape[0] > 1:
+            log.info('Mean Average error: ')
+            log.info(str(mean_average_error))
 
 
 if __name__ == '__main__':
     import pandas as pd
     import logging
+    import re
 
-    logging.basicConfig(filename=os.path.join(expr_base, 'eval', 'handpick_eval'), level=logging.INFO,
+    logging.basicConfig(filename=os.path.join(expr_base, 'anno_frame_match', 'eval', 'handpick_eval'),
+                        level=logging.INFO,
                         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
     '''center locs'''
     loc_data_dir = os.path.join(data_dir, 'Image', 'Village0', 'crop_loc', 'center_crops')
-    loc_ids = list(range(0, 17, 2))
+    loc_ids = range(0, 17, 2)
     # crop_subpx_0orien_withdrop
     retvals0 = np.array([
         [[-6.26324013e+00, -5.02172304e+00, 4.55360656e+03],
@@ -447,53 +454,74 @@ if __name__ == '__main__':
             csv_file = os.path.join(loc_data_dir, 'center_loc' + str(idx) + '.csv')
             df = pd.read_csv(csv_file)
             test_array = np.array([
-                center_of_corners(np.reshape(df['pt1', 'loc_x1':'loc_y4'], (4, 2))),
-                center_of_corners(np.reshape(df['pt2', 'loc_x1':'loc_y4'], (4, 2))),
-                center_of_corners(np.reshape(df['pt3', 'loc_x1':'loc_y4'], (4, 2))),
-                center_of_corners(np.reshape(df['pt4', 'loc_x1':'loc_y4'], (4, 2)))
+                center_of_corners(np.reshape(df.loc['pt1', 'loc_x1':'loc_y4'].values, (4, 2))),
+                center_of_corners(np.reshape(df.loc['pt2', 'loc_x1':'loc_y4'].values, (4, 2))),
+                center_of_corners(np.reshape(df.loc['pt3', 'loc_x1':'loc_y4'].values, (4, 2))),
+                center_of_corners(np.reshape(df.loc['pt4', 'loc_x1':'loc_y4'].values, (4, 2)))
             ])
             test_pts.append(test_array)
             target_array = np.array([
-                center_of_corners(np.reshape(df['pt1', 'map_x1':'map_y4'], (4, 2))),
-                center_of_corners(np.reshape(df['pt2', 'mao_x1':'map_y4'], (4, 2))),
-                center_of_corners(np.reshape(df['pt3', 'map_x1':'map_y4'], (4, 2))),
-                center_of_corners(np.reshape(df['pt4', 'map_x1':'map_y4'], (4, 2))),
+                center_of_corners(np.reshape(df.loc['pt1', 'map_x1':].values, (4, 2))),
+                center_of_corners(np.reshape(df.loc['pt2', 'map_x1':].values, (4, 2))),
+                center_of_corners(np.reshape(df.loc['pt3', 'map_x1':].values, (4, 2))),
+                center_of_corners(np.reshape(df.loc['pt4', 'map_x1':].values, (4, 2))),
             ])
             target_pts.append(target_array)
         logger.info(desc)
+        test_pts = np.array(test_pts)
+        target_pts = np.array(target_pts)
         warp_error(test_pts, target_pts, retval_array, logger)
-    '''origin = cv.imread('/home/patrick/PatrickWorkspace/AerialVisualGeolocalization/experiments/origin.png')
-    trans = cv.imread('/home/patrick/PatrickWorkspace/AerialVisualGeolocalization/experiments/trans.png')
-    detector = cv.xfeatures2d_SIFT.create()
-    pts1, descs1 = detector.detectAndCompute(origin, None)
-    pts2, descs2 = detector.detectAndCompute(trans, None)
-    matcher = cv.DescriptorMatcher_create(cv.DescriptorMatcher_FLANNBASED)
-    ratio_thresh = 0.75
-    raw_matches = matcher.knnMatch(descs1, descs2, 2)
-    good_matches = []
-    # match filtering
-    match_cvpt1 = []
-    match_cvpt2 = []
-    match_pts1 = []
-    match_pts2 = []
-    count = 0
-    for m, n in raw_matches:
-        if m.distance < ratio_thresh * n.distance:
-            # heapq.heappush(good_matches, (m.distance, m))
-            match_cvpt1.append(pts1[m.queryIdx])
-            match_pts1.append(pts1[m.queryIdx].pt)
-            match_cvpt2.append(pts2[m.trainIdx])
-            match_pts2.append(pts2[m.trainIdx].pt)
-            good_matches.append(cv_match(count, count))
-            count += 1
-    crop = (0, trans.shape[1], 0, trans.shape[0])
-    match_pts1 = np.array(match_pts1).reshape((-1, 1, 2))
-    match_pts2 = np.array(match_pts2).reshape((-1, 1, 2))
-    retval, mask = homography(origin, trans, match_pts1, match_pts2)
-
-    draw_match(origin, match_cvpt1, trans, match_cvpt2, good_matches,
-               '/home/patrick/PatrickWorkspace/AerialVisualGeolocalization/experiments/draw_test',
-               8, 'draw', retval)
-    draw_match(origin, match_cvpt1, trans, match_cvpt2, good_matches,
-               '/home/patrick/PatrickWorkspace/AerialVisualGeolocalization/experiments/draw_test/corrected_slic_match.png')
-    '''
+    '''locs'''
+    log_dir = expr_dir = os.path.join(expr_base, 'anno_frame_match', 'eval', 'log')
+    loc_data_dir = os.path.join(data_dir, 'Image', 'Village0', 'loc')
+    loc_ids = range(1, 17, 2)
+    homo_dict = {}
+    pattern = re.compile(r'-?\d\..*e.*')
+    for filename in os.listdir(log_dir):
+        with open(os.path.join(log_dir, filename)) as logfile:
+            log = logfile.read()
+            log = log.split('Homography')
+        homo_mat_str_parts = log[1:]
+        num_idx = [8, 9, 11, 14, 16, 18, 21, 22]
+        homos = []
+        for str_part in homo_mat_str_parts:
+            lines = str_part.split('\n')
+            num_str = lines[1] + lines[2] + lines[3]
+            num_str = num_str.replace(r']', ' ')
+            num_str = num_str.replace(r'[', ' ')
+            num_str = num_str.split(' ')
+            homo = []
+            for str_part in num_str:
+                if re.match(pattern, str_part):
+                    homo.append(float(str_part))
+                if len(homo) == 8:
+                    break
+            homo.append(1)
+            homo = (np.array(homo)).reshape((3, 3))
+            homos.append(homo)
+        homos = np.array(homos)
+        homo_dict[filename] = homos
+    for desc, homos in homo_dict.items():
+        test_pts = []
+        target_pts = []
+        for idx in loc_ids:
+            csv_file = os.path.join(loc_data_dir, 'loc' + str(idx) + '.csv')
+            df = pd.read_csv(csv_file)
+            test_array = np.array([
+                center_of_corners(np.reshape(df.loc['pt1', 'loc_x1':'loc_y4'].values, (4, 2))),
+                center_of_corners(np.reshape(df.loc['pt2', 'loc_x1':'loc_y4'].values, (4, 2))),
+                center_of_corners(np.reshape(df.loc['pt3', 'loc_x1':'loc_y4'].values, (4, 2))),
+                center_of_corners(np.reshape(df.loc['pt4', 'loc_x1':'loc_y4'].values, (4, 2)))
+            ])
+            test_pts.append(test_array)
+            target_array = np.array([
+                center_of_corners(np.reshape(df.loc['pt1', 'map_x1':].values, (4, 2))),
+                center_of_corners(np.reshape(df.loc['pt2', 'map_x1':].values, (4, 2))),
+                center_of_corners(np.reshape(df.loc['pt3', 'map_x1':].values, (4, 2))),
+                center_of_corners(np.reshape(df.loc['pt4', 'map_x1':].values, (4, 2))),
+            ])
+            target_pts.append(target_array)
+        logger.info(desc)
+        test_pts = np.array(test_pts)
+        target_pts = np.array(target_pts)
+        warp_error(test_pts, target_pts, homos, logger)

@@ -1,7 +1,14 @@
 import cv2 as cv
-from common import *
+import common
+from common import data_dir, neighbors, cv_match, expr_base, cv_point, default_corners, \
+    mask_of, unify_sift_desc, draw_match, homography, adaptive_affine, adaptive_scale, \
+    rotation_phi, point_val, warp_error
 import logging
 import heapq
+
+import os
+from sklearn.neighbors import NearestNeighbors
+import numpy as np
 
 distance_thresh = 0.2
 geometric_thresh = 12
@@ -12,6 +19,13 @@ map_path = os.path.join(data_dir, 'Image', 'Village0', 'map.jpg')
 frame_dir = os.path.join(data_dir, 'Image', 'Village0', 'loc')
 binary_dir = os.path.join(data_dir, 'Image', 'Village0', 'binary')
 compactness = 16
+
+
+class SiftMatch:
+    def __init__(self, train_idx, query_idx, dist):
+        self.trainIdx = train_idx
+        self.queryIdx = query_idx
+        self.distance = dist
 
 
 def detect_compute_task(img, gray_img, x_scope, y_scope, content_mask, slic_mask,
@@ -28,7 +42,7 @@ def detect_compute_task(img, gray_img, x_scope, y_scope, content_mask, slic_mask
                         coord_set[coord] = ''
                         oriens = compute_orientation(gray_img, (x, y))
                         for orien in oriens:
-                            keypoints.append(cv_point((x, y), orien))
+                            keypoints.append(common.cv_point((x, y), orien))
                     for neighbor in neighbors((x, y), x_scope, y_scope, neighbor_refine,
                                               neighbor_refine):
                         coord = str(neighbor[0]) + ',' + str(neighbor[1])
@@ -188,12 +202,14 @@ def detect_compute(img, compactness=None, content_corners=None, draw=None, calc_
 
 def feature_match(img1, img2, img1_features=None, img2_features=None, map_pt_indices=None, draw=None, match_result=None,
                   sift_method=False,
-                  refine=None, neighbor_refine=1, unit_desc=False, subpixel=False):
+                  refine='neighbor', neighbor_refine=1, unit_desc=False, subpixel=False,
+                  kd_tree_match=False):
     # max_matches=500):
     # assert neighbor_refine > 0 and neighbor_refine % 2 == 1
     refines = ['neighbor', 'ncc']
-    if refine is not None:
-        assert refine in refines
+    if refine is None:
+        refine = 'neighbor'
+    assert refine in refines
     if img1_features is None:
         img1_point, img1_desc = detect_compute(img1)
     else:
@@ -202,92 +218,181 @@ def feature_match(img1, img2, img1_features=None, img2_features=None, map_pt_ind
         img2_point, img2_desc = detect_compute(img2)
     else:
         img2_point, img2_desc = img2_features[0], img2_features[1]
-    matcher = cv.DescriptorMatcher_create(cv.DescriptorMatcher_FLANNBASED)
     if sift_method:
         ratio_thresh = 0.75
-        raw_matches = matcher.knnMatch(img1_desc, img2_desc, 2)
-        good_matches = []
-        # match filtering
-        corresponding1 = []
-        corresponding2 = []
-        distances = []
-        detector = cv.xfeatures2d_SIFT.create()
-        for m, n in raw_matches:
-            if m.distance < ratio_thresh * n.distance:
-                # heapq.heappush(good_matches, (m.distance, m))
-                good_matches.append(m)
-                corresponding1.append(img1_point[m.queryIdx].pt)
-                distances.append(m.distance)
-                if subpixel:
-                    corresponding2.append(img2_point[m.trainIdx].pt)
-                    continue
-                if refine == refines[0]:
-                    if neighbor_refine > 1:
-                        neighbor_cvpts = neighbors(img2_point[m.trainIdx].pt, (0, img2.shape[1]),
-                                                   (0, img2.shape[0]), neighbor_refine, neighbor_refine, True)
-                        ordered_pts = [img2_point[m.trainIdx]]
-                        ordered_descs = [img2_desc[m.trainIdx]]
-                        uncalc_pts = []
-                        if map_pt_indices is not None:
-                            for cvpt in neighbor_cvpts:
-                                key = str(cvpt.pt[0]) + ',' + str(cvpt.pt[1])
-                                if key in map_pt_indices.keys():
-                                    ordered_pts.append(cvpt)
-                                    ordered_descs.append(img2_desc[map_pt_indices[key]])
-                                else:
-                                    uncalc_pts.append(cvpt)
-                        cvpts, desc2 = detector.compute(img2, uncalc_pts)
-                        ordered_pts += cvpts
-                        ordered_descs = np.concatenate([np.array(ordered_descs), desc2], axis=0)
-                        if unit_desc:
-                            ordered_descs = unify_sift_desc(ordered_descs)
-                        match = matcher.knnMatch(np.expand_dims(img1_desc[m.queryIdx], axis=0), ordered_descs, 1)
-                        corresponding2.append(ordered_pts[match[0][0].trainIdx].pt)
-                    else:
+        if kd_tree_match:
+            nbrs = NearestNeighbors(
+                n_neighbors=2, algorithm='kd_tree').fit(img2_desc)
+            distances, indices = nbrs.kneighbors(img1_desc)
+            good_matches = []
+            # match filtering
+            corresponding1 = []
+            corresponding2 = []
+            distances = []
+            for i in range(len(distances)):
+                dists = distances[i]
+                idx = indices[i]
+                if dists[0] < dists[1] * ratio_thresh:
+                    m = SiftMatch(train_idx=idx[0], query_idx=i, dist=dists[0])
+                    good_matches.append(m)
+                    corresponding1.append(img1_point[m.queryIdx].pt)
+                    distances.append(m.distance)
+                    if subpixel:
                         corresponding2.append(img2_point[m.trainIdx].pt)
-                else:
-                    # ncc refine
-                    query_pt = img1_point[m.queryIdx].pt
-                    y_start = max(int(query_pt[1] - 7), 0)
-                    y_end = min(int(query_pt[1] + 7 + 1), img1.shape[0])
-                    x_start = max(0, int(query_pt[0] - 7))
-                    x_end = min(int(query_pt[0] + 7 + 1), img1.shape[1])
-                    tplt_w = (x_end - x_start)
-                    tplt_h = (y_end - y_start)
-                    if tplt_h < 15:
-                        if tplt_h % 2 == 0:
-                            if y_start == 0:
-                                y_end += 1
-                            else:
-                                y_start -= 1
-                    if tplt_w < 15:
-                        if tplt_w % 2 == 0:
-                            if x_start == 0:
-                                x_end += 1
-                            else:
-                                x_start -= 1
-                    tplt_center = ((x_start + x_end - 1) / 2, (y_start + y_end - 1) / 2)
-                    tplt_offset = (tplt_center[0] - query_pt[0], tplt_center[1] - query_pt[1])
-                    tplt = img1[y_start:y_end, x_start: x_end, :]
-                    search_center = (
-                        img2_point[m.trainIdx].pt[0] + tplt_offset[0], img2_point[m.trainIdx].pt[1] + tplt_offset[1])
-                    search_window = (int(search_center[0]), int(search_center[1]), 25, 25)
-                    _, best_match_pt = ncc_match(tplt, img2, search_window)
-                    match_pt = (best_match_pt[0] - tplt_offset[0], best_match_pt[1] - tplt_offset[1])
-                    corresponding2.append(match_pt)
-                # use best 500-at-most matches
-                ''' 
-                if len(good_matches) <= max_matches:
-                    for match in good_matches:
-                        corresponding1.append(img1_point[match.queryIdx].pt)
-                        corresponding2.append(img2_point[match.trainIdx].pt)
-                else:
-                    for i in range(max_matches):
-                        match = heapq.heappop(good_matches)
-                        corresponding1.append(img1_point[match.queryIdx].pt)
-                        corresponding2.append(img2_point[match.trainIdx].pt)
-                '''
+                        continue
+                    if refine == refines[0]:
+                        if neighbor_refine > 1:
+                            matcher = cv.DescriptorMatcher_create(
+                                cv.DescriptorMatcher_FLANNBASED)
+                            detector = cv.xfeatures2d_SIFT.create()
+                            neighbor_cvpts = neighbors(img2_point[m.trainIdx].pt, (0, img2.shape[1]),
+                                                       (0, img2.shape[0]), neighbor_refine, neighbor_refine, True)
+                            ordered_pts = [img2_point[m.trainIdx]]
+                            ordered_descs = [img2_desc[m.trainIdx]]
+                            uncalc_pts = []
+                            if map_pt_indices is not None:
+                                for cvpt in neighbor_cvpts:
+                                    key = str(cvpt.pt[0]) + \
+                                        ',' + str(cvpt.pt[1])
+                                    if key in map_pt_indices.keys():
+                                        ordered_pts.append(cvpt)
+                                        ordered_descs.append(
+                                            img2_desc[map_pt_indices[key]])
+                                    else:
+                                        uncalc_pts.append(cvpt)
+                            cvpts, desc2 = detector.compute(img2, uncalc_pts)
+                            ordered_pts += cvpts
+                            ordered_descs = np.concatenate(
+                                [np.array(ordered_descs), desc2], axis=0)
+                            if unit_desc:
+                                ordered_descs = unify_sift_desc(ordered_descs)
+                            match = matcher.knnMatch(np.expand_dims(
+                                img1_desc[m.queryIdx], axis=0), ordered_descs, 1)
+                            corresponding2.append(
+                                ordered_pts[match[0][0].trainIdx].pt)
+                        else:
+                            corresponding2.append(img2_point[m.trainIdx].pt)
+                    else:
+                        # ncc refine
+                        query_pt = img1_point[m.queryIdx].pt
+                        y_start = max(int(query_pt[1] - 7), 0)
+                        y_end = min(int(query_pt[1] + 7 + 1), img1.shape[0])
+                        x_start = max(0, int(query_pt[0] - 7))
+                        x_end = min(int(query_pt[0] + 7 + 1), img1.shape[1])
+                        tplt_w = (x_end - x_start)
+                        tplt_h = (y_end - y_start)
+                        if tplt_h < 15:
+                            if tplt_h % 2 == 0:
+                                if y_start == 0:
+                                    y_end += 1
+                                else:
+                                    y_start -= 1
+                        if tplt_w < 15:
+                            if tplt_w % 2 == 0:
+                                if x_start == 0:
+                                    x_end += 1
+                                else:
+                                    x_start -= 1
+                        tplt_center = ((x_start + x_end - 1) / 2,
+                                       (y_start + y_end - 1) / 2)
+                        tplt_offset = (
+                            tplt_center[0] - query_pt[0], tplt_center[1] - query_pt[1])
+                        tplt = img1[y_start:y_end, x_start: x_end, :]
+                        search_center = (
+                            img2_point[m.trainIdx].pt[0] + tplt_offset[0],
+                            img2_point[m.trainIdx].pt[1] + tplt_offset[1])
+                        search_window = (int(search_center[0]), int(
+                            search_center[1]), 25, 25)
+                        _, best_match_pt = ncc_match(tplt, img2, search_window)
+                        match_pt = (
+                            best_match_pt[0] - tplt_offset[0], best_match_pt[1] - tplt_offset[1])
+                        corresponding2.append(match_pt)
+
+        else:
+            matcher = cv.DescriptorMatcher_create(
+                cv.DescriptorMatcher_FLANNBASED)
+            raw_matches = matcher.knnMatch(img1_desc, img2_desc, 2)
+            good_matches = []
+            # match filtering
+            corresponding1 = []
+            corresponding2 = []
+            distances = []
+            detector = cv.xfeatures2d_SIFT.create()
+            for m, n in raw_matches:
+                if m.distance < ratio_thresh * n.distance:
+                    # heapq.heappush(good_matches, (m.distance, m))
+                    good_matches.append(m)
+                    corresponding1.append(img1_point[m.queryIdx].pt)
+                    distances.append(m.distance)
+                    if subpixel:
+                        corresponding2.append(img2_point[m.trainIdx].pt)
+                        continue
+                    if refine == refines[0]:
+                        if neighbor_refine > 1:
+                            neighbor_cvpts = neighbors(img2_point[m.trainIdx].pt, (0, img2.shape[1]),
+                                                       (0, img2.shape[0]), neighbor_refine, neighbor_refine, True)
+                            ordered_pts = [img2_point[m.trainIdx]]
+                            ordered_descs = [img2_desc[m.trainIdx]]
+                            uncalc_pts = []
+                            if map_pt_indices is not None:
+                                for cvpt in neighbor_cvpts:
+                                    key = str(cvpt.pt[0]) + \
+                                        ',' + str(cvpt.pt[1])
+                                    if key in map_pt_indices.keys():
+                                        ordered_pts.append(cvpt)
+                                        ordered_descs.append(
+                                            img2_desc[map_pt_indices[key]])
+                                    else:
+                                        uncalc_pts.append(cvpt)
+                            cvpts, desc2 = detector.compute(img2, uncalc_pts)
+                            ordered_pts += cvpts
+                            ordered_descs = np.concatenate(
+                                [np.array(ordered_descs), desc2], axis=0)
+                            if unit_desc:
+                                ordered_descs = unify_sift_desc(ordered_descs)
+                            match = matcher.knnMatch(np.expand_dims(
+                                img1_desc[m.queryIdx], axis=0), ordered_descs, 1)
+                            corresponding2.append(
+                                ordered_pts[match[0][0].trainIdx].pt)
+                        else:
+                            corresponding2.append(img2_point[m.trainIdx].pt)
+                    else:
+                        # ncc refine
+                        query_pt = img1_point[m.queryIdx].pt
+                        y_start = max(int(query_pt[1] - 7), 0)
+                        y_end = min(int(query_pt[1] + 7 + 1), img1.shape[0])
+                        x_start = max(0, int(query_pt[0] - 7))
+                        x_end = min(int(query_pt[0] + 7 + 1), img1.shape[1])
+                        tplt_w = (x_end - x_start)
+                        tplt_h = (y_end - y_start)
+                        if tplt_h < 15:
+                            if tplt_h % 2 == 0:
+                                if y_start == 0:
+                                    y_end += 1
+                                else:
+                                    y_start -= 1
+                        if tplt_w < 15:
+                            if tplt_w % 2 == 0:
+                                if x_start == 0:
+                                    x_end += 1
+                                else:
+                                    x_start -= 1
+                        tplt_center = ((x_start + x_end - 1) / 2,
+                                       (y_start + y_end - 1) / 2)
+                        tplt_offset = (
+                            tplt_center[0] - query_pt[0], tplt_center[1] - query_pt[1])
+                        tplt = img1[y_start:y_end, x_start: x_end, :]
+                        search_center = (
+                            img2_point[m.trainIdx].pt[0] + tplt_offset[0],
+                            img2_point[m.trainIdx].pt[1] + tplt_offset[1])
+                        search_window = (int(search_center[0]), int(
+                            search_center[1]), 25, 25)
+                        _, best_match_pt = ncc_match(tplt, img2, search_window)
+                        match_pt = (
+                            best_match_pt[0] - tplt_offset[0], best_match_pt[1] - tplt_offset[1])
+                        corresponding2.append(match_pt)
     else:
+        matcher = cv.DescriptorMatcher_create(cv.DescriptorMatcher_FLANNBASED)
         raw_matches = matcher.knnMatch(img1_desc, img2_desc, 50)
         distance_valid_matches = raw_matches
         # distance threshoding
@@ -314,10 +419,12 @@ def feature_match(img1, img2, img1_features=None, img2_features=None, map_pt_ind
                 ytranslation_dict.setdefault(ytranslation, 0)
                 ytranslation_dict[ytranslation] += 1
         voted_xtranslation = heapq.nlargest(1,
-                                            [(translation, count) for translation, count in xtranslation_dict.items()],
+                                            [(translation, count) for translation,
+                                             count in xtranslation_dict.items()],
                                             lambda item: item[1])
         voted_ytranslation = heapq.nlargest(1,
-                                            [(translation, count) for translation, count in ytranslation_dict.items()],
+                                            [(translation, count) for translation,
+                                             count in ytranslation_dict.items()],
                                             lambda item: item[1])
         for group in distance_valid_matches:
             valid_group = []
@@ -355,20 +462,25 @@ def feature_match(img1, img2, img1_features=None, img2_features=None, map_pt_ind
             diff_xstart = query_point[0] - templ_expand
             diff_xend = query_point[0] + templ_expand - img1.shape[1] + 1
             if diff_ystart < 0:
-                template = np.concatenate([np.zeros((-diff_ystart, template.shape[1], 3)), template], axis=0)
+                template = np.concatenate(
+                    [np.zeros((-diff_ystart, template.shape[1], 3)), template], axis=0)
             if diff_yend > 0:
-                template = np.concatenate([template, np.zeros((diff_yend, template.shape[1], 3))], axis=0)
+                template = np.concatenate(
+                    [template, np.zeros((diff_yend, template.shape[1], 3))], axis=0)
             if diff_xstart < 0:
-                template = np.concatenate([np.zeros((template.shape[0], -diff_xstart, 3)), template], axis=1)
+                template = np.concatenate(
+                    [np.zeros((template.shape[0], -diff_xstart, 3)), template], axis=1)
             if diff_xend > 0:
-                template = np.concatenate([template, np.zeros((template.shape[0], diff_xend, 3))], axis=1)
+                template = np.concatenate(
+                    [template, np.zeros((template.shape[0], diff_xend, 3))], axis=1)
             max_response = -1
             match_point = None
             for match in group:
                 train_point = np.int32(img2_point[match.trainIdx].pt)
                 search_window = (train_point[0], train_point[1], 2 * geometric_thresh + 1,
                                  2 * geometric_thresh + 1)  # center,width,height
-                res_val, res_x, res_y = ncc_match(template, img2, search_window)
+                res_val, res_x, res_y = ncc_match(
+                    template, img2, search_window)
                 if res_val > max_response:
                     match_point = (res_x, res_y)
             corresponding1.append((query_point[0], query_point[1]))
@@ -423,16 +535,21 @@ def ncc_match(template, img, search_window):
     diff_xstart = x - w_expand
     diff_xend = x + w_expand - img.shape[1] + 1
     if diff_ystart < 0:
-        search_img = np.concatenate([np.zeros((-diff_ystart, search_img.shape[1], 3)), search_img], axis=0)
+        search_img = np.concatenate(
+            [np.zeros((-diff_ystart, search_img.shape[1], 3)), search_img], axis=0)
     if diff_yend > 0:
-        search_img = np.concatenate([search_img, np.zeros((diff_yend, search_img.shape[1], 3))], axis=0)
+        search_img = np.concatenate([search_img, np.zeros(
+            (diff_yend, search_img.shape[1], 3))], axis=0)
     if diff_xstart < 0:
-        search_img = np.concatenate([np.zeros((search_img.shape[0], -diff_xstart, 3)), search_img], axis=1)
+        search_img = np.concatenate(
+            [np.zeros((search_img.shape[0], -diff_xstart, 3)), search_img], axis=1)
     if diff_xend > 0:
-        search_img = np.concatenate([search_img, np.zeros((search_img.shape[0], diff_xend, 3))], axis=1)
+        search_img = np.concatenate([search_img, np.zeros(
+            (search_img.shape[0], diff_xend, 3))], axis=1)
     # template = cv.cvtColor(np.uint8(template), cv.COLOR_BGR2GRAY)
     # search_img = (cv.cvtColor(np.uint8(search_img), cv.COLOR_BGR2GRAY))
-    response = cv.matchTemplate(np.uint8(search_img), np.uint8(template), method=cv.TM_CCOEFF_NORMED)
+    response = cv.matchTemplate(np.uint8(search_img), np.uint8(
+        template), method=cv.TM_CCOEFF_NORMED)
     min_val, max_val, min_loc, max_loc = cv.minMaxLoc(response)
     return max_val, (max_loc[0] + origin[0], max_loc[1] + origin[1])
 
@@ -450,7 +567,7 @@ def subpixel_refine(gray_img, coord, reject_thred=0.03):
         dy = (gray_img[y + 1][x] - gray_img[y - 1][x]) / 2.
         dxx = gray_img[y][x + 1] - 2 * gray_img[y][x] + gray_img[y][x - 1]
         dxy = ((gray_img[y + 1][x + 1] - gray_img[y + 1][x - 1]) - (
-                gray_img[y - 1][x + 1] - gray_img[y - 1][x - 1])) / 4.
+            gray_img[y - 1][x + 1] - gray_img[y - 1][x - 1])) / 4.
         dyy = gray_img[y + 1][x] - 2 * gray_img[y][x] + gray_img[y - 1][x]
         Jac = np.array([dx, dy])
         Hes = np.array([[dxx, dxy], [dxy, dyy]])
@@ -541,8 +658,10 @@ def compute_orientation(gray_img, pt, sigma=1.5):
 
 def gradient(gray_img, pt):
     x, y = pt
-    dy = float(gray_img[min(gray_img.shape[0] - 1, y + 1), x]) - float(gray_img[max(0, y - 1), x])
-    dx = float(gray_img[y, min(gray_img.shape[1] - 1, x + 1)]) - float(gray_img[y, max(0, x - 1)])
+    dy = float(gray_img[min(gray_img.shape[0] - 1, y + 1), x]
+               ) - float(gray_img[max(0, y - 1), x])
+    dx = float(gray_img[y, min(gray_img.shape[1] - 1, x + 1)]
+               ) - float(gray_img[y, max(0, x - 1)])
     magnitude = (dx ** 2 + dy ** 2) ** 0.5
     theta = np.arctan2(dy, dx) + np.pi
     deg = np.degrees(theta) % 360
@@ -557,18 +676,22 @@ def zero_orien_test():
     corners = pd.read_csv(os.path.join(frame_dir, 'corners.csv'))
     for frame_file in corners.index:
         corner = np.array([[corners.loc[frame_file, 'x1'], corners.loc[frame_file, 'y1'] + 5],
-                           [corners.loc[frame_file, 'x2'] - 5, corners.loc[frame_file, 'y2']],
-                           [corners.loc[frame_file, 'x0'] + 5, corners.loc[frame_file, 'y0']],
+                           [corners.loc[frame_file, 'x2'] - 5,
+                               corners.loc[frame_file, 'y2']],
+                           [corners.loc[frame_file, 'x0'] + 5,
+                               corners.loc[frame_file, 'y0']],
                            [corners.loc[frame_file, 'x3'], corners.loc[frame_file, 'y3'] - 5]])
         fileid = frame_file[:-4]
         frame = cv.imread(os.path.join(frame_dir, frame_file))
         match_result = []
         frame_points, frame_descs = detect_compute(frame, compactness,
-                                                   draw=os.path.join(expr_dir, fileid + '_slic.png'),
+                                                   draw=os.path.join(
+                                                       expr_dir, fileid + '_slic.png'),
                                                    content_corners=corner)
         print('Frame ' + fileid + ' features calculated !')
         img1_points, img2_points = feature_match(frame, reference, (frame_points, frame_descs), (map_points, map_descs),
-                                                 os.path.join(expr_dir, fileid + '_slic_match.png'), match_result,
+                                                 os.path.join(
+                                                     expr_dir, fileid + '_slic_match.png'), match_result,
                                                  sift_method=True)
         print(fileid + ' match complete !')
         if len(img1_points) < 4 or len(img2_points) < 4:
@@ -598,18 +721,22 @@ def orien_test():
     corners = pd.read_csv(os.path.join(frame_dir, 'corners.csv'))
     for frame_file in corners.index:
         corner = np.array([[corners.loc[frame_file, 'x1'], corners.loc[frame_file, 'y1'] + 5],
-                           [corners.loc[frame_file, 'x2'] - 5, corners.loc[frame_file, 'y2']],
-                           [corners.loc[frame_file, 'x0'] + 5, corners.loc[frame_file, 'y0']],
+                           [corners.loc[frame_file, 'x2'] - 5,
+                               corners.loc[frame_file, 'y2']],
+                           [corners.loc[frame_file, 'x0'] + 5,
+                               corners.loc[frame_file, 'y0']],
                            [corners.loc[frame_file, 'x3'], corners.loc[frame_file, 'y3'] - 5]])
         fileid = frame_file[:-4]
         frame = cv.imread(os.path.join(frame_dir, frame_file))
         match_result = []
         frame_points, frame_descs = detect_compute(frame, compactness,
-                                                   draw=os.path.join(expr_dir, fileid + '_slic.png'),
+                                                   draw=os.path.join(
+                                                       expr_dir, fileid + '_slic.png'),
                                                    content_corners=corner, calc_oriens=True)
         print('Frame ' + fileid + ' features calculated !')
         img1_points, img2_points = feature_match(frame, reference, (frame_points, frame_descs), (map_points, map_descs),
-                                                 os.path.join(expr_dir, fileid + '_slic_match.png'), match_result,
+                                                 os.path.join(
+                                                     expr_dir, fileid + '_slic_match.png'), match_result,
                                                  sift_method=True)
         print(fileid + ' match complete !')
         if len(img1_points) < 4 or len(img2_points) < 4:
@@ -639,18 +766,22 @@ def demo_create():
     corners = pd.read_csv(os.path.join(frame_dir, 'corners.csv'))
     for frame_file in corners.index:
         corner = np.array([[corners.loc[frame_file, 'x1'], corners.loc[frame_file, 'y1'] + 5],
-                           [corners.loc[frame_file, 'x2'] - 5, corners.loc[frame_file, 'y2']],
-                           [corners.loc[frame_file, 'x0'] + 5, corners.loc[frame_file, 'y0']],
+                           [corners.loc[frame_file, 'x2'] - 5,
+                               corners.loc[frame_file, 'y2']],
+                           [corners.loc[frame_file, 'x0'] + 5,
+                               corners.loc[frame_file, 'y0']],
                            [corners.loc[frame_file, 'x3'], corners.loc[frame_file, 'y3'] - 5]])
         fileid = frame_file[:-4]
         frame = cv.imread(os.path.join(frame_dir, frame_file))
         match_result = []
         frame_points, frame_descs = detect_compute(frame, compactness,
-                                                   draw=os.path.join(expr_dir, fileid + '_slic.png'),
+                                                   draw=os.path.join(
+                                                       expr_dir, fileid + '_slic.png'),
                                                    content_corners=corner, calc_oriens=True)
         print('Frame ' + fileid + ' features calculated !')
         img1_points, img2_points = feature_match(frame, reference, (frame_points, frame_descs), (map_points, map_descs),
-                                                 os.path.join(expr_dir, fileid + '_slic_match.png'), match_result,
+                                                 os.path.join(
+                                                     expr_dir, fileid + '_slic_match.png'), match_result,
                                                  sift_method=True)
         print(fileid + ' match complete !')
         if len(img1_points) < 4 or len(img2_points) < 4:
@@ -663,14 +794,16 @@ def demo_create():
             if retval is None:
                 print(fileid + ' slic sift match failed !')
             else:
-                homo_corners = np.concatenate([corner, np.ones((4, 1))], axis=1)
+                homo_corners = np.concatenate(
+                    [corner, np.ones((4, 1))], axis=1)
                 trans_corners = np.matmul(homo_corners, retval.T)
                 trans_corners = np.int32(np.array(
                     [trans_corners[0][:-1] / trans_corners[0][-1], trans_corners[1][:-1] / trans_corners[1][-1],
                      trans_corners[3][:-1] / trans_corners[3][-1], trans_corners[2][:-1] / trans_corners[2][-1]]))
                 poly_corners = trans_corners.reshape((-1, 1, 2))
                 bgd = reference.copy()
-                cv.polylines(bgd, poly_corners, isClosed=True, color=(0, 0, 255), thickness=18)
+                cv.polylines(bgd, poly_corners, isClosed=True,
+                             color=(0, 0, 255), thickness=18)
                 # cv.line(bgd, tuple(trans_corners[0].tolist()), tuple(trans_corners[1].tolist()), color=(0, 0, 255),
                 #         thickness=18)
                 # cv.line(bgd, tuple(trans_corners[1].tolist()), tuple(trans_corners[2].tolist()), color=(0, 0, 255),
@@ -701,8 +834,10 @@ def scale_test(calc_orien=False, step=1):
         # for frame_file in corners.index:
         frame_file = corners.index[i]
         origin_corner = np.array([[corners.loc[frame_file, 'x1'], corners.loc[frame_file, 'y1'] + 5],
-                                  [corners.loc[frame_file, 'x2'] - 5, corners.loc[frame_file, 'y2']],
-                                  [corners.loc[frame_file, 'x0'] + 5, corners.loc[frame_file, 'y0']],
+                                  [corners.loc[frame_file, 'x2'] - 5,
+                                      corners.loc[frame_file, 'y2']],
+                                  [corners.loc[frame_file, 'x0'] + 5,
+                                      corners.loc[frame_file, 'y0']],
                                   [corners.loc[frame_file, 'x3'], corners.loc[frame_file, 'y3'] - 5]])
         fileid = frame_file[:-4]
         origin_frame = cv.imread(os.path.join(frame_dir, frame_file))
@@ -710,14 +845,16 @@ def scale_test(calc_orien=False, step=1):
             if factor == 10:
                 continue
             factor /= 10.0
-            frame, mat, corner = adaptive_scale(origin_frame, factor, content_corners=origin_corner)
+            frame, mat, corner = adaptive_scale(
+                origin_frame, factor, content_corners=origin_corner)
             match_result = []
             frame_points, frame_descs = detect_compute(frame, compactness,
                                                        draw=os.path.join(expr_dir,
                                                                          fileid + '_factor' + str(
                                                                              factor) + '_slic.png'),
                                                        content_corners=corner, calc_oriens=calc_orien)
-            logger.info('Frame ' + fileid + '_factor' + str(factor) + ' features calculated !')
+            logger.info('Frame ' + fileid + '_factor' +
+                        str(factor) + ' features calculated !')
             img1_points, img2_points = feature_match(frame, reference, (frame_points, frame_descs),
                                                      (map_points, map_descs),
                                                      os.path.join(expr_dir,
@@ -725,7 +862,8 @@ def scale_test(calc_orien=False, step=1):
                                                      match_result, sift_method=True)
             logger.info(fileid + '_factor' + str(factor) + ' match complete !')
             if len(img1_points) < 4 or len(img2_points) < 4:
-                logger.info(fileid + '_factor' + str(factor) + ' match failed !')
+                logger.info(fileid + '_factor' +
+                            str(factor) + ' match failed !')
             else:
                 img1_points = np.array(img1_points).reshape((-1, 1, 2))
                 img2_points = np.array(img2_points).reshape((-1, 1, 2))
@@ -734,13 +872,15 @@ def scale_test(calc_orien=False, step=1):
                                                                  fileid + '_factor' + str(
                                                                      factor) + '_slic-homography.png'))
                 if retval is None:
-                    logger.info(fileid + '_factor' + str(factor) + ' slic sift match failed !')
+                    logger.info(fileid + '_factor' + str(factor) +
+                                ' slic sift match failed !')
                 else:
                     valid_matches = []
                     for i in range(mask.shape[0]):
                         if mask[i][0] == 1:
                             valid_matches.append(match_result[0][2][i])
-                    logger.info(fileid + '_factor' + str(factor) + ' valid matches: ' + str(len(valid_matches)))
+                    logger.info(fileid + '_factor' + str(factor) +
+                                ' valid matches: ' + str(len(valid_matches)))
                     draw_match(frame, match_result[0][0], reference, match_result[0][1], valid_matches,
                                os.path.join(expr_dir, fileid + '_factor' + str(factor) + '_corrected_slic_match.png'))
 
@@ -763,8 +903,10 @@ def rot_test(calc_orien=True, step=1):
         # for frame_file in corners.index:
         frame_file = corners.index[i]
         origin_corner = np.array([[corners.loc[frame_file, 'x1'], corners.loc[frame_file, 'y1'] + 5],
-                                  [corners.loc[frame_file, 'x2'] - 5, corners.loc[frame_file, 'y2']],
-                                  [corners.loc[frame_file, 'x0'] + 5, corners.loc[frame_file, 'y0']],
+                                  [corners.loc[frame_file, 'x2'] - 5,
+                                      corners.loc[frame_file, 'y2']],
+                                  [corners.loc[frame_file, 'x0'] + 5,
+                                      corners.loc[frame_file, 'y0']],
                                   [corners.loc[frame_file, 'x3'], corners.loc[frame_file, 'y3'] - 5]])
         fileid = frame_file[:-4]
         origin_frame = cv.imread(os.path.join(frame_dir, frame_file))
@@ -772,13 +914,15 @@ def rot_test(calc_orien=True, step=1):
             if deg == 0:
                 continue
             deg *= 10
-            frame, mat, corner = rotation_phi(origin_frame, deg, content_corners=origin_corner)
+            frame, mat, corner = rotation_phi(
+                origin_frame, deg, content_corners=origin_corner)
             match_result = []
             frame_points, frame_descs = detect_compute(frame, compactness,
                                                        draw=os.path.join(expr_dir,
                                                                          fileid + '_deg' + str(deg) + '_slic.png'),
                                                        content_corners=corner, calc_oriens=calc_orien)
-            logger.info('Frame ' + fileid + '_deg' + str(deg) + ' features calculated !')
+            logger.info('Frame ' + fileid + '_deg' +
+                        str(deg) + ' features calculated !')
             img1_points, img2_points = feature_match(frame, reference, (frame_points, frame_descs),
                                                      (map_points, map_descs),
                                                      os.path.join(expr_dir,
@@ -794,13 +938,15 @@ def rot_test(calc_orien=True, step=1):
                                           save_path=os.path.join(expr_dir,
                                                                  fileid + '_deg' + str(deg) + '_slic-homography.png'))
                 if retval is None:
-                    logger.info(fileid + '_deg' + str(deg) + ' slic sift match failed !')
+                    logger.info(fileid + '_deg' + str(deg) +
+                                ' slic sift match failed !')
                 else:
                     valid_matches = []
                     for i in range(mask.shape[0]):
                         if mask[i][0] == 1:
                             valid_matches.append(match_result[0][2][i])
-                    logger.info(fileid + '_deg' + str(deg) + ' valid matches: ' + str(len(valid_matches)))
+                    logger.info(fileid + '_deg' + str(deg) +
+                                ' valid matches: ' + str(len(valid_matches)))
                     draw_match(frame, match_result[0][0], reference, match_result[0][1], valid_matches,
                                os.path.join(expr_dir, fileid + '_deg' + str(deg) + '_corrected_slic_match.png'))
 
@@ -810,8 +956,8 @@ def viewpoint_test():
 
 
 def map_features(mapimg, calc_orien=False, with_corners=False, neighbors=1, unit=False, pt_indices_dict=None,
-                 subpixel=False, subpx_drop=True):
-    binary_prefix = 'map_features'
+                 subpixel=False, subpx_drop=True, compactness=16):
+    binary_prefix = 'c' + str(compactness) + '_map_features'
     binary_postfix = '.pkl'
     orien = '_0orien' if not calc_orien else '_calc_orien'
     corners = '' if not with_corners else '_corners'
@@ -823,7 +969,8 @@ def map_features(mapimg, calc_orien=False, with_corners=False, neighbors=1, unit
         else:
             sub_pixel += '_nodrop'
     neighbor = '_n' + str(neighbors)
-    binary_filename = binary_prefix + orien + neighbor + corners + unit + sub_pixel + binary_postfix
+    binary_filename = binary_prefix + orien + neighbor + \
+        corners + unit + sub_pixel + binary_postfix
     map_binary = os.path.join(binary_dir, binary_filename)
     '''if calc_orien:
         if with_corners:
@@ -881,7 +1028,7 @@ def map_features(mapimg, calc_orien=False, with_corners=False, neighbors=1, unit
 
 
 def eval(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1, ransac_param=(1, 4096), unit=False,
-         map_refine=None, subpixel=False):
+         map_refine='neighbor', subpixel=False, compactness=16, kdtree_match=False):
     import pandas as pd
     import logging
     print(result_dir)
@@ -891,10 +1038,10 @@ def eval(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1, ransac_
     print('Map Load !')
     pt_indices = {}
     map_points, map_descs = map_features(reference, pt_indices_dict=pt_indices, with_corners=det_corner,
-                                         calc_orien=calc_orien, unit=unit, subpixel=subpixel)
+                                         calc_orien=calc_orien, unit=unit, subpixel=subpixel, compactness=compactness)
     corners = pd.read_csv(os.path.join(corrected_frame_dir, 'corners.csv'))
     expr_dir = os.path.join(expr_base, 'anno_frame_match', 'eval', result_dir)
-    logging.basicConfig(filename=os.path.join(expr_dir, 'eval_log'), level=logging.INFO,
+    logging.basicConfig(filename=os.path.join(expr_dir, result_dir), level=logging.INFO,
                         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
     id = 1
@@ -906,14 +1053,17 @@ def eval(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1, ransac_
         id += 2
         frame = cv.imread(os.path.join(corrected_frame_dir, frame_file))
         corner = np.array([[corners.loc[frame_file, 'x1'], corners.loc[frame_file, 'y1']],
-                           [corners.loc[frame_file, 'x2'], corners.loc[frame_file, 'y2']],
-                           [corners.loc[frame_file, 'x0'], corners.loc[frame_file, 'y0']],
+                           [corners.loc[frame_file, 'x2'],
+                               corners.loc[frame_file, 'y2']],
+                           [corners.loc[frame_file, 'x0'],
+                               corners.loc[frame_file, 'y0']],
                            [corners.loc[frame_file, 'x3'], corners.loc[frame_file, 'y3']]])
         match_result = []
         print('Computing ' + fileid)
         logger.info('Computing ' + fileid)
         frame_points, frame_descs = detect_compute(frame, compactness, content_corners=corner,
-                                                   draw=os.path.join(expr_dir, fileid + '_slic.png'),
+                                                   # os.path.join(expr_dir, fileid + '_slic.png'),
+                                                   draw=None,
                                                    calc_oriens=calc_orien, neighbor_refine=nloc,
                                                    unit_length=unit, detect_corner=det_corner, sub_pixel=subpixel)
         logger.info('Frame ' + fileid + ' features calculated !')
@@ -921,10 +1071,11 @@ def eval(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1, ransac_
         logger.info('Matching ' + fileid)
         img1_points, img2_points = feature_match(frame, reference, (frame_points, frame_descs),
                                                  (map_points, map_descs),
-                                                 draw=os.path.join(expr_dir, fileid + '_slic_match.png'),
+                                                 # os.path.join(expr_dir, fileid + '_slic_match.png'),
+                                                 draw=None,
                                                  match_result=match_result, unit_desc=unit, neighbor_refine=nmap,
                                                  sift_method=True, refine=map_refine, map_pt_indices=pt_indices,
-                                                 subpixel=subpixel)
+                                                 subpixel=subpixel, kd_tree_match=kdtree_match)
         logger.info(fileid + ' match complete !')
         if len(img1_points) < 4 or len(img2_points) < 4:
             logger.info(fileid + ' match failed !')
@@ -933,7 +1084,8 @@ def eval(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1, ransac_
             img2_points = np.array(img2_points).reshape((-1, 1, 2))
             logger.info('Warpping ' + fileid)
             retval, mask = homography(frame, reference, img1_points, img2_points, src_corners=corner,
-                                      save_path=os.path.join(expr_dir, fileid + '_slic-homography.png'),
+                                      # os.path.join(expr_dir, fileid + '_slic-homography.png'),
+                                      save_path=None,
                                       ransac_thrd=ransac_param[0], ransac_iter=ransac_param[1])
             logger.info('Homography: ')
             logger.info(str(retval))
@@ -949,9 +1101,12 @@ def eval(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1, ransac_
                     if mask[i][0] == 1:
                         valid_matches.append(matches[i])
                         match_distances.append(matches[i].distance)
-                        match_test_list.append(img1_points[matches[i].queryIdx].pt)
-                        match_target_list.append(img2_points[matches[i].trainIdx].pt)
-                logger.info(fileid + ' valid matches: ' + str(len(valid_matches)))
+                        match_test_list.append(
+                            img1_points[matches[i].queryIdx].pt)
+                        match_target_list.append(
+                            img2_points[matches[i].trainIdx].pt)
+                logger.info(fileid + ' valid matches: ' +
+                            str(len(valid_matches)))
                 draw_match(frame, match_result[0][0], reference, match_result[0][1], valid_matches,
                            os.path.join(expr_dir, fileid + '_corrected_slic_match.png'))
                 draw_match(frame, match_result[0][0], reference, match_result[0][1], valid_matches,
@@ -965,7 +1120,7 @@ def eval(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1, ransac_
 
 
 def eval_on_crops(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1, ransac_param=(1, 4096), unit=False,
-                  map_refine=None):
+                  map_refine='neighbor'):
     import logging
     print(result_dir)
     base_dir = os.path.join(data_dir, 'Image', 'Village0', 'crop_loc')
@@ -977,7 +1132,7 @@ def eval_on_crops(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1
     pt_indices = {}
     map_points, map_descs = map_features(reference, pt_indices_dict=pt_indices, with_corners=det_corner,
                                          calc_orien=calc_orien, unit=unit)
-    logging.basicConfig(filename=os.path.join(expr_dir, 'eval_log'), level=logging.INFO,
+    logging.basicConfig(filename=os.path.join(expr_dir, result_dir), level=logging.INFO,
                         format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
     logger = logging.getLogger(__name__)
     id = 0
@@ -997,7 +1152,8 @@ def eval_on_crops(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1
         print('Computing ' + fileid)
         logger.info('Computing ' + fileid)
         frame_points, frame_descs = detect_compute(frame, compactness,
-                                                   draw=os.path.join(expr_dir, fileid + '_slic.png'),
+                                                   draw=os.path.join(
+                                                       expr_dir, fileid + '_slic.png'),
                                                    calc_oriens=calc_orien, neighbor_refine=nloc,
                                                    unit_length=unit, detect_corner=det_corner)
         logger.info('Frame ' + fileid + ' features calculated !')
@@ -1005,7 +1161,8 @@ def eval_on_crops(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1
         logger.info('Matching ' + fileid)
         img1_points, img2_points = feature_match(frame, reference, (frame_points, frame_descs),
                                                  (map_points, map_descs),
-                                                 draw=os.path.join(expr_dir, fileid + '_slic_match.png'),
+                                                 draw=os.path.join(
+                                                     expr_dir, fileid + '_slic_match.png'),
                                                  match_result=match_result, unit_desc=unit, neighbor_refine=nmap,
                                                  sift_method=True, refine=map_refine, map_pt_indices=pt_indices)
         logger.info(fileid + ' match complete !')
@@ -1016,7 +1173,8 @@ def eval_on_crops(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1
             img2_points = np.array(img2_points).reshape((-1, 1, 2))
             logger.info('Warpping ' + fileid)
             retval, mask = homography(frame, reference, img1_points, img2_points,
-                                      save_path=os.path.join(expr_dir, fileid + '_slic-homography.png'),
+                                      save_path=os.path.join(
+                                          expr_dir, fileid + '_slic-homography.png'),
                                       ransac_thrd=ransac_param[0], ransac_iter=ransac_param[1])
             logger.info('Homography: ')
             logger.info(str(retval))
@@ -1032,9 +1190,12 @@ def eval_on_crops(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1
                     if mask[i][0] == 1:
                         valid_matches.append(matches[i])
                         match_distances.append(matches[i].distance)
-                        match_test_list.append(img1_points[matches[i].queryIdx].pt)
-                        match_target_list.append(img2_points[matches[i].trainIdx].pt)
-                logger.info(fileid + ' valid matches: ' + str(len(valid_matches)))
+                        match_test_list.append(
+                            img1_points[matches[i].queryIdx].pt)
+                        match_target_list.append(
+                            img2_points[matches[i].trainIdx].pt)
+                logger.info(fileid + ' valid matches: ' +
+                            str(len(valid_matches)))
                 draw_match(frame, match_result[0][0], reference, match_result[0][1], valid_matches,
                            os.path.join(expr_dir, fileid + '_corrected_slic_match.png'))
                 try:
@@ -1043,25 +1204,100 @@ def eval_on_crops(result_dir, calc_orien=False, det_corner=False, nloc=1, nmap=1
                 except BaseException as e:
                     logger.info(fileid + ' draw match parts')
                     logger.info(e)
-                warp_error(match_test_list, match_target_list, retval, logger)
+                match_test_list = np.array(match_test_list)
+                match_target_list = np.array(match_target_list)
+                warp_error(np.expand_dims(match_test_list, axis=0), np.expand_dims(match_target_list, axis=0),
+                           np.expand_dims(retval, axis=0), logger)
 
 
 if __name__ == '__main__':
     import pickle
     import pandas as pd
+    import multiprocessing as mp
 
     # eval_on_crops('crop_0orien_nmap_corner', det_corner=True, nmap=7)
     # eval_on_crops('crop_0orien_nmap_corner_unit', det_corner=True, nmap=7, unit=True)
     # eval('subpx_0orien_withdrop', subpixel=True)
     # eval('subpx_0orien_unit_withdrop', unit=True, subpixel=True)
+
     # eval('0orien')
     # eval('0orien_default_ransac', ransac_param=(3, 2000))
-    #eval('0orien_nloc', nloc=7)
+    # eval('0orien_nloc', nloc=7)
     # eval('0orien_nmap', nmap=7)
     # eval('0orien_nmap_corner', det_corner=True)
-    eval('calc_orien', calc_orien=True)
+    # eval('calc_orien', calc_orien=True)
     # eval('0orien_ncc_corner', det_corner=True, map_refine='ncc')
 
+    # eval('0orien_nmap5', nmap=5)
+    # eval('0orien_ransac4k', ransac_param=(3, 4096))
+    # eval('0orien_ransac_t1', ransac_param=(1, 2000))
+    # eval('0orien_ncc', map_refine='ncc')
+    # eval('0orien_nmap_corner', det_corner=True, nmap=7)
+    # eval('0orien_corner', det_corner=True)
+    # eval_on_crops('crop_0orien')
+    # eval_on_crops('crop_0orien_corner', det_corner=True)
+    # eval('0orien_ncc7', map_refine='ncc')
+    # eval('0orien_ncc5', map_refine='ncc')
+    proc_pool = mp.Pool(8)
+    '''
+    # ransac param
+    eval('0orien')
+    eval('0orien_default_ransac', ransac_param=(3, 2000))
+    eval('0orien_ransac4k', ransac_param=(3, 4096))
+    eval('0orien_ransac_t1', ransac_param=(1, 2000))
+    '''
+    # proc_pool.apply(eval, args=('runtime_0orien',))
+    # proc_pool.apply(eval, args=('0orien_default_ransac',), kwds={'ransac_param': (3, 2000)})
+    # proc_pool.apply(eval, args=('0orien_ransac4k',), kwds={'ransac_param': (3, 4096)})
+    # proc_pool.apply(eval, args=('0orien_ransac_t1',), kwds={'ransac_param': (1, 2000)})
+    '''
+    #map refine
+    eval('0orien_nmap5', nmap=5)
+    eval('0orien_nmap', nmap=7)
+    eval('0orien_ncc7', map_refine='ncc')
+    eval('0orien_ncc5', map_refine='ncc')
+    '''
+    # proc_pool.apply(eval, args=('0orien_nmap5',), kwds={'nmap': 5})
+
+    # proc_pool.apply(eval, args=('0orien_ncc7',), kwds={'map_refine': 'ncc'})
+    # proc_pool.apply(eval, args=('0orien_ncc5',), kwds={})
+    '''
+    #corner
+    eval('0orien_corner', det_corner=True)
+    eval('0orien_nmap_corner', det_corner=True,nmap=7)
+    eval('0orien_ncc_corner', det_corner=True, map_refine='ncc')
+    '''
+    # proc_pool.apply(eval, args=('0orien_corner',), kwds={'det_corner': True})
+
+    # proc_pool.apply(eval, args=('0orien_ncc_corner',), kwds={'det_corner': True, 'map_refine': 'ncc'})
+    '''
+    #crop
+    eval_on_crops('crop_0orien')
+    eval_on_crops('crop_0orien_corner', det_corner=True)
+    '''
+    # proc_pool.apply(eval_on_crops, args=('crop_0orien',))
+    # proc_pool.apply(eval_on_crops, args=('crop_0orien_corner',), kwds={'det_corner': True})
+    # proc_pool.apply(eval_on_crops, args=('crop_0orien_nmap',), kwds={'nmap': 5})
+
+    # proc_pool.apply(eval, args=('runtime_ncc15',), kwds={'map_refine': 'ncc'})
+    # proc_pool.apply(eval_on_crops, args=('crop_0orien_ncc15',), kwds={'map_refine': 'ncc'})
+    # proc_pool.apply(eval, args=('0orien_nmap',), kwds={'nmap': 7})
+    # proc_pool.apply(eval_on_crops, args=('crop_0orien_ncc7',), kwds={'map_refine': 'ncc'})
+
+    # proc_pool.apply(eval, args=('0orien_ransact1_ncc15',), kwds={'ransac_param': (1, 2000), 'map_refine': 'ncc'})
+
+    # proc_pool.apply(eval, args=('0orien_nmap_corner',), kwds={'det_corner': True, 'nmap': 5})
+
+    proc_pool.apply(eval, args=('slic_32',), kwds={
+                    'map_refine': 'ncc', 'compactness': 32})
+    proc_pool.apply(eval, args=('slic_64',), kwds={
+                    'map_refine': 'ncc', 'compactness': 64})
+    proc_pool.apply(eval, args=('slic_128',), kwds={
+                    'map_refine': 'ncc', 'compactness': 128})
+    proc_pool.apply(eval, args=('kdtree16',), kwds={
+                    'kdtree_match': True, 'map_refine': 'ncc'})
+    proc_pool.close()
+    proc_pool.join()
     '''demo_create()
     proc_pool = Pool(4)'''
     # orien_test()

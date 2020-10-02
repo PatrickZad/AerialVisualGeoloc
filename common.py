@@ -212,13 +212,13 @@ def draw_match(img1, img1_points, img2, img2_points, matches, path, group_draw=N
 
                 pts1_array = np.array([point.pt for point in pts1])
                 x_min, x_max, y_min, y_max = pts1_array[:, 0].min(), pts1_array[:, 0].max(), \
-                    pts1_array[:, 1].min(), pts1_array[:, 1].max()
+                                             pts1_array[:, 1].min(), pts1_array[:, 1].max()
                 x_min, x_max = max(
                     0, x_min - 128), min(img1.shape[1], x_max + 128)
                 y_min, y_max = max(
                     0, y_min - 128), min(img1.shape[0], y_max + 128)
                 region = np.array([[x_min, y_min], [x_max, y_min], [
-                                  x_min, y_max], [x_max, y_max]])
+                    x_min, y_max], [x_max, y_max]])
                 warp_region = warp_pts(region, homo_mat)
                 crop2 = np.int32((warp_region[:, 0].min(), warp_region[:, 0].max(),
                                   warp_region[:, 1].min(), warp_region[:, 1].max()))
@@ -325,7 +325,7 @@ def warp_error(test_pts, target_pts, homo_mat, log=None):
                 valid_error.append(average_error[i])
         valid_error = np.array(valid_error)
         mean_average_error = (np.sum(valid_error) - valid_error.max() - valid_error.min()) \
-            / (valid_error.shape[0] - 2)
+                             / (valid_error.shape[0] - 2)
     if log is not None:
         '''log.info('Test points: ')
         log.info(str(test_pts))
@@ -348,10 +348,19 @@ def cvt2lab(img):
     return img
 
 
+def match_vis(ref, tar, correspondencs, save_path):
+    pass
+
+
+def estimate_error(homog, correspondences):
+    pass
+
+
 if __name__ == '__main__':
     import pandas as pd
     import logging
     import re
+
 
     def parse_logline_time(lines):
         import time
@@ -369,6 +378,7 @@ if __name__ == '__main__':
             else:
                 result.append(None)
         return result
+
 
     logging.basicConfig(filename=os.path.join(expr_base, 'anno_frame_match', 'eval', 'handpick_eval'),
                         level=logging.INFO,
